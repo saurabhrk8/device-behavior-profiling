@@ -1,0 +1,95 @@
+{
+    "mouse": [
+        "click",
+        "dblclick",
+        "mousedown",
+        "mouseup",
+        "mousemove",
+        "mouseenter",
+        "mouseleave",
+        "mouseover",
+        "mouseout",
+        "contextmenu",
+        "wheel",
+        "auxclick"
+    ],
+    "keyboard": [
+        "keydown",
+        "keypress",
+        "keyup"
+    ],
+    "touch_gesture": [
+        "touchstart",
+        "touchmove",
+        "touchend",
+        "touchcancel",
+        "gesturestart",
+        "gesturechange",
+        "gestureend"
+    ],
+    "pointer": [
+        "pointerdown",
+        "pointermove",
+        "pointerup",
+        "pointercancel",
+        "pointerenter",
+        "pointerleave",
+        "pointerover",
+        "pointerout"
+    ],
+    "scroll_navigation": [
+        "scroll",
+        "wheel",
+        "beforeunload",
+        "popstate",
+        "hashchange"
+    ],
+    "focus_blur": [
+        "focus",
+        "blur",
+        "focusin",
+        "focusout",
+        "visibilitychange"
+    ],
+    "drag_drop": [
+        "drag",
+        "dragstart",
+        "dragend",
+        "dragenter",
+        "dragleave",
+        "dragover",
+        "drop"
+    ],
+    "clipboard": [
+        "copy",
+        "cut",
+        "paste"
+    ],
+    "form_input": [
+        "input",
+        "change",
+        "submit",
+        "reset",
+        "invalid",
+        "select"
+    ],
+    "media": [
+        "play",
+        "pause",
+        "ended",
+        "volumechange",
+        "seeking",
+        "seeked",
+        "ratechange"
+    ],
+    "window_system": [
+        "resize",
+        "orientationchange",
+        "deviceorientation",
+        "devicemotion",
+        "online",
+        "offline",
+        "batterychange",
+        "fullscreenchange"
+    ]
+}
