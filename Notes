@@ -1,1 +1,8 @@
-sreenivas.sp@capgemini.com
+Subject: Request for a brief discussion on API migration tool design
+Hi Srini,
+I hope you’re doing well.
+Gaurav (API Tech Lead at Barclays) and I are currently working on designing and building an API migration tool—potentially using Go or JavaScript—to extract OAS and policy artifacts.
+Given your experience in this area, we would really value the opportunity to get your guidance and clarify a few design and implementation questions. Would you be open to a short discussion at a time convenient for you?
+Thanks in advance, and looking forward to your thoughts.
+Best regards,
+Saurabh
