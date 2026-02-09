@@ -1,31 +1,27 @@
-1. POST https://{hostname}/api/login​
-Returns AtmoAuthToken Cookie
+<project xmlns="http://maven.apache.org/POM/4.0.0" 
+         健康xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
 
-2.GET https://{hostname}/api/apis​
-Returns list of all APIs on the platform along with API Ids
+    <groupId>com.migration</groupId>
+    <artifactId>akana-utility</artifactId>
+    <version>1.0-SNAPSHOT</version>
 
-3.GET https://{hostname}/api/apis/{APIID}/versions​
-Returns Versions & VersionID for the Requested API
+    <properties>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+    </properties>
 
-4. GET
-https://{hostname}/api/apis/versions/implementations?APIVersio
-nID=​
-Returns the ImplementationCode
-
-5. 
-https://{hostname}/api/apis/versions/{ApiVersionID}/implementat
-ions/{ImplCode}/policies​
-
-Returns policies assigned to the specified implementation​
-
-6. GET
-https://{hostname}/api/apis/versions/{APIVersionID}/definition/oa
-s3?Environment=​
-
-Returns Open API 3.0 specification​
-
-7.GET https://{hostname}/api/apis/versions/{APIVersionID}/package​
-
-Exports full configuration including settings, config, security
-artifacts​​​​​
-
+    <dependencies>
+        <dependency>
+            <groupId>org.apache.httpcomponents</groupId>
+            <artifactId>httpclient</artifactId>
+            <version>4.5.13</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+            <version>2.8.9</version>
+        </dependency>
+    </dependencies>
+</project>
