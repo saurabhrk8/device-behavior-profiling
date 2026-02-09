@@ -1,1 +1,31 @@
-Comparison: Java vs. Go for Migration UtilitiesFeatureJava (Current Expertise)Go (Golang)Development SpeedHigh (No learning curve for your team).Medium (Simple syntax, but team must learn "the Go way").Tooling/LibrariesVast (Excellent for parsing XML/JSON, SOAP, and Akana specificities).Good (Great for REST/JSON, but may lack niche legacy libraries).DeploymentRequires JRE/JDK installation on the target machine.Single Binary (Self-contained, no runtime needed).Memory/StartupHigher overhead; "Warm-up" time for the JVM.Minimal; Instant startup and very low RAM usage.ConcurrencyMature (Virtual Threads/ExecutorService).Built-in (Goroutines are extremely lightweight).Error HandlingExceptions (try-catch).Explicit (if err != nil).MaintainabilityHigh (Team already knows the patterns).High (Language is designed for readability).
+1. POST https://{hostname}/api/login​
+Returns AtmoAuthToken Cookie
+
+2.GET https://{hostname}/api/apis​
+Returns list of all APIs on the platform along with API Ids
+
+3.GET https://{hostname}/api/apis/{APIID}/versions​
+Returns Versions & VersionID for the Requested API
+
+4. GET
+https://{hostname}/api/apis/versions/implementations?APIVersio
+nID=​
+Returns the ImplementationCode
+
+5. 
+https://{hostname}/api/apis/versions/{ApiVersionID}/implementat
+ions/{ImplCode}/policies​
+
+Returns policies assigned to the specified implementation​
+
+6. GET
+https://{hostname}/api/apis/versions/{APIVersionID}/definition/oa
+s3?Environment=​
+
+Returns Open API 3.0 specification​
+
+7.GET https://{hostname}/api/apis/versions/{APIVersionID}/package​
+
+Exports full configuration including settings, config, security
+artifacts​​​​​
+
