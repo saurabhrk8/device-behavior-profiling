@@ -1,27 +1,91 @@
-<project xmlns="http://maven.apache.org/POM/4.0.0" 
-         健康xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
+AkanaToApigeeMigrator
 
-    <groupId>com.migration</groupId>
-    <artifactId>akana-utility</artifactId>
-    <version>1.0-SNAPSHOT</version>
+<dependencies>
+    <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+        <version>2.15.2</version>
+    </dependency>
+</dependencies>
 
-    <properties>
-        <maven.compiler.source>11</maven.compiler.source>
-        <maven.compiler.target>11</maven.compiler.target>
-    </properties>
 
-    <dependencies>
-        <dependency>
-            <groupId>org.apache.httpcomponents</groupId>
-            <artifactId>httpclient</artifactId>
-            <version>4.5.13</version>
-        </dependency>
-        <dependency>
-            <groupId>com.google.code.gson</groupId>
-            <artifactId>gson</artifactId>
-            <version>2.8.9</version>
-        </dependency>
-    </dependencies>
-</project>
+import java.net.CookieManager;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.Scanner;
+
+public class AkanaMigrator {
+
+    private static final String HOST = "https://your-akana-hostname"; // Replace this
+    private static HttpClient client;
+
+    public static void main(String[] args) throws Exception {
+        // Initialize client with Cookie Management
+        client = HttpClient.newBuilder()
+                .cookieHandler(new CookieManager())
+                .build();
+
+        System.out.println("--- Starting Akana Migration ---");
+
+        // 1. Login
+        login("your_username", "your_password");
+
+        // 2. Get APIs
+        String apisJson = getRequest("/api/apis");
+        System.out.println("Fetched APIs successfully.");
+
+        // For demonstration, let's assume we have an API ID
+        // In a real loop, you'd parse apisJson to get these IDs
+        String apiId = "example-api-id"; 
+
+        // 3. Get Versions
+        String versionsJson = getRequest("/api/apis/" + apiId + "/versions");
+        String versionId = "example-version-id";
+
+        // 4. Get Implementation Code
+        String implJson = getRequest("/api/apis/versions/implementations?APIVersionID=" + versionId);
+        String implCode = "example-impl-code";
+
+        // 5. Get Policies
+        String policies = getRequest("/api/apis/versions/" + versionId + "/implementations/" + implCode + "/policies");
+        System.out.println("Policies retrieved.");
+
+        // 6. Get OAS 3.0 Definition
+        String oas = getRequest("/api/apis/versions/" + versionId + "/definition/oas3?Environment=Production");
+        System.out.println("OAS Definition downloaded.");
+
+        // 7. Export Full Package
+        String packageData = getRequest("/api/apis/versions/" + versionId + "/package");
+        
+        System.out.println("--- Migration Data Capture Complete ---");
+    }
+
+    private static void login(String user, String pass) throws Exception {
+        String payload = "{\"username\":\"" + user + "\", \"password\":\"" + pass + "\"}";
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(HOST + "/api/login"))
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(payload))
+                .build();
+
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() == 200) {
+            System.out.println("Login Successful. Cookie stored.");
+        } else {
+            throw new RuntimeException("Login failed: " + response.statusCode());
+        }
+    }
+
+    private static String getRequest(String endpoint) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(HOST + endpoint))
+                .header("Accept", "application/json")
+                .GET()
+                .build();
+
+        return client.send(request, HttpResponse.BodyHandlers.ofString()).body();
+    }
+}
