@@ -1,91 +1,159 @@
-AkanaToApigeeMigrator
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
 
-<dependencies>
-    <dependency>
-        <groupId>com.fasterxml.jackson.core</groupId>
-        <artifactId>jackson-databind</artifactId>
-        <version>2.15.2</version>
-    </dependency>
-</dependencies>
+    <groupId>com.migration</groupId>
+    <artifactId>AkanaToApigee</artifactId>
+    <version>1.0-SNAPSHOT</version>
+
+    <properties>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>2.16.1</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.1.0</version>
+                <configuration>
+                    <mainClass>com.migration.MigratorApp</mainClass>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
 
 
-import java.net.CookieManager;
+
+-------------------
+
+package com.migration;
+
+import java.net.*;
+import java.net.http.*;
+
+public class AkanaClient {
+    private final String host;
+    private final HttpClient client;
+
+    public AkanaClient(String host) {
+        this.host = host;
+        this.client = HttpClient.newBuilder().cookieHandler(new CookieManager()).build();
+    }
+
+    public void login(String user, String pass) throws Exception {
+        String body = "{\"username\":\"" + user + "\", \"password\":\"" + pass + "\"}";
+        sendRequest(host + "/api/login", "POST", body);
+        System.out.println("✅ Logged into Akana");
+    }
+
+    public String fetchOAS(String versionId) throws Exception {
+        return sendRequest(host + "/api/apis/versions/" + versionId + "/definition/oas3?Environment=Production", "GET", null);
+    }
+
+    private String sendRequest(String url, String method, String body) throws Exception {
+        HttpRequest.Builder builder = HttpRequest.newBuilder().uri(URI.create(url)).header("Accept", "application/json");
+        if (method.equals("POST")) builder.header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body));
+        else builder.GET();
+
+        HttpResponse<String> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() >= 300) throw new RuntimeException("HTTP Error: " + response.statusCode());
+        return response.body();
+    }
+}
+
+-------------------------------
+
+package com.migration;
+
+import java.io.*;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.util.Scanner;
+import java.net.http.*;
+import java.nio.file.*;
+import java.util.zip.*;
 
-public class AkanaMigrator {
-
-    private static final String HOST = "https://your-akana-hostname"; // Replace this
-    private static HttpClient client;
-
-    public static void main(String[] args) throws Exception {
-        // Initialize client with Cookie Management
-        client = HttpClient.newBuilder()
-                .cookieHandler(new CookieManager())
-                .build();
-
-        System.out.println("--- Starting Akana Migration ---");
-
-        // 1. Login
-        login("your_username", "your_password");
-
-        // 2. Get APIs
-        String apisJson = getRequest("/api/apis");
-        System.out.println("Fetched APIs successfully.");
-
-        // For demonstration, let's assume we have an API ID
-        // In a real loop, you'd parse apisJson to get these IDs
-        String apiId = "example-api-id"; 
-
-        // 3. Get Versions
-        String versionsJson = getRequest("/api/apis/" + apiId + "/versions");
-        String versionId = "example-version-id";
-
-        // 4. Get Implementation Code
-        String implJson = getRequest("/api/apis/versions/implementations?APIVersionID=" + versionId);
-        String implCode = "example-impl-code";
-
-        // 5. Get Policies
-        String policies = getRequest("/api/apis/versions/" + versionId + "/implementations/" + implCode + "/policies");
-        System.out.println("Policies retrieved.");
-
-        // 6. Get OAS 3.0 Definition
-        String oas = getRequest("/api/apis/versions/" + versionId + "/definition/oas3?Environment=Production");
-        System.out.println("OAS Definition downloaded.");
-
-        // 7. Export Full Package
-        String packageData = getRequest("/api/apis/versions/" + versionId + "/package");
+public class ApigeeClient {
+    public File createBundle(String apiName, String oasContent) throws IOException {
+        Path tempDir = Files.createTempDirectory("apigee-");
+        Path apiProxyDir = Files.createDirectories(tempDir.resolve("apiproxy"));
         
-        System.out.println("--- Migration Data Capture Complete ---");
-    }
+        // 1. Write Proxy XML
+        Files.writeString(apiProxyDir.resolve(apiName + ".xml"), 
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><APIProxy name=\"" + apiName + "\"/>");
 
-    private static void login(String user, String pass) throws Exception {
-        String payload = "{\"username\":\"" + user + "\", \"password\":\"" + pass + "\"}";
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(HOST + "/api/login"))
-                .header("Content-Type", "application/json")
-                .header("Accept", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(payload))
-                .build();
+        // 2. Write OAS resource
+        Path resDir = Files.createDirectories(apiProxyDir.resolve("resources/oas"));
+        Files.writeString(resDir.resolve("openapi.json"), oasContent);
 
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-        if (response.statusCode() == 200) {
-            System.out.println("Login Successful. Cookie stored.");
-        } else {
-            throw new RuntimeException("Login failed: " + response.statusCode());
+        // 3. Zip it
+        File zipFile = new File(apiName + ".zip");
+        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
+            Files.walk(apiProxyDir).filter(p -> !Files.isDirectory(p)).forEach(path -> {
+                try {
+                    zos.putNextEntry(new ZipEntry(tempDir.relativize(path).toString().replace("\\", "/")));
+                    Files.copy(path, zos);
+                    zos.closeEntry();
+                } catch (IOException e) { e.printStackTrace(); }
+            });
         }
+        return zipFile;
     }
 
-    private static String getRequest(String endpoint) throws Exception {
+    public void upload(String org, String apiName, File zipFile, String token) throws Exception {
+        String url = "https://apigee.googleapis.com/v1/organizations/" + org + "/apis?action=import&name=" + apiName;
+        HttpClient client = HttpClient.newHttpClient();
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(HOST + endpoint))
-                .header("Accept", "application/json")
-                .GET()
+                .uri(URI.create(url))
+                .header("Authorization", "Bearer " + token)
+                .header("Content-Type", "application/octet-stream") // Simplified for this example
+                .POST(HttpRequest.BodyPublishers.ofFile(zipFile.toPath()))
                 .build();
 
-        return client.send(request, HttpResponse.BodyHandlers.ofString()).body();
+        HttpResponse<String> resp = client.send(request, HttpResponse.BodyHandlers.ofString());
+        System.out.println("🚀 Apigee Response: " + resp.statusCode() + " - " + resp.body());
+    }
+}
+-------------------------------------------------
+
+
+package com.migration;
+
+import java.io.File;
+
+public class MigratorApp {
+    public static void main(String[] args) {
+        try {
+            // Configuration (Update these!)
+            String AKANA_HOST = "https://your-akana.com";
+            String APIGEE_ORG = "your-apigee-org";
+            String APIGEE_TOKEN = "your-access-token";
+
+            AkanaClient akana = new AkanaClient(AKANA_HOST);
+            ApigeeClient apigee = new ApigeeClient();
+
+            // 1. Akana Step
+            akana.login("username", "password");
+            String oas = akana.fetchOAS("version-id-here");
+
+            // 2. Apigee Step
+            File bundle = apigee.createBundle("Migrated_API_v1", oas);
+            apigee.upload(APIGEE_ORG, "Migrated_API_v1", bundle, APIGEE_TOKEN);
+
+            System.out.println("✅ SUCCESS: Migration finished.");
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 }
