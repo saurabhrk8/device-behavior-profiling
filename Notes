@@ -1,6 +1,132 @@
-<properties>
-    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-    <maven.compiler.source>17</maven.compiler.source>
-    <maven.compiler.target>17</maven.compiler.target>
-</properties>
+package com.migration;
+
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
+import java.net.CookieManager;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+public class AkanaClient {
+    private final String host;
+    private final HttpClient client;
+    private String csrfToken = "";
+    private String authCookie = "";
+
+    public AkanaClient(String host) throws Exception {
+        // Ensure host doesn't end with a slash to avoid // in URLs
+        this.host = host.endsWith("/") ? host.substring(0, host.length() - 1) : host;
+
+        // 1. Setup Insecure SSL Context (Matches Insomnia's "Disable SSL Verification")
+        TrustManager[] trustAllCerts = new TrustManager[]{
+            new X509TrustManager() {
+                public X509Certificate[] getAcceptedIssuers() { return null; }
+                public void checkClientTrusted(X509Certificate[] certs, String authType) {}
+                public void checkServerTrusted(X509Certificate[] certs, String authType) {}
+            }
+        };
+
+        SSLContext sslContext = SSLContext.getInstance("TLS");
+        sslContext.init(null, trustAllCerts, new SecureRandom());
+
+        // 2. Initialize HttpClient with the insecure context and a CookieManager
+        this.client = HttpClient.newBuilder()
+                .sslContext(sslContext)
+                .cookieHandler(new CookieManager())
+                .followRedirects(HttpClient.Redirect.ALWAYS)
+                .build();
+    }
+
+    public void login(String user, String pass, String domain) throws Exception {
+        // Updated to ssoLogin as per your working Insomnia URL
+        String loginUrl = host + "/api/login/ssoLogin";
+
+        // 3. Prepare Form URL Encoded data
+        Map<String, String> formData = new HashMap<>();
+        formData.put("identity_username", user);
+        formData.put("secret_password", pass);
+        formData.put("domain", domain);
+
+        String formBody = formData.entrySet().stream()
+                .map(e -> URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8) + "=" +
+                          URLEncoder.encode(e.getValue(), StandardCharsets.UTF_8))
+                .collect(Collectors.joining("&"));
+
+        System.out.println("🚀 Attempting login to: " + loginUrl);
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(loginUrl))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .header("Accept", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(formBody))
+                .build();
+
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+        if (response.statusCode() == 200) {
+            // 4. Capture Cookies for session persistence
+            List<String> cookies = response.headers().allValues("set-cookie");
+            for (String cookie : cookies) {
+                if (cookie.contains("AtmoAuthToken_bdn")) {
+                    this.authCookie = cookie.split(";")[0];
+                }
+                if (cookie.contains("Csrf-Token_bdn")) {
+                    // Extract value if it's in format Csrf-Token_bdn=value;
+                    String pair = cookie.split(";")[0];
+                    if (pair.contains("=")) {
+                        this.csrfToken = pair.split("=")[1];
+                    }
+                }
+            }
+            System.out.println("✅ Login Successful.");
+            System.out.println("DEBUG: Csrf-Token captured: " + (csrfToken.isEmpty() ? "None" : "Yes"));
+        } else {
+            System.err.println("❌ Login Failed. Status: " + response.statusCode());
+            System.err.println("Response Body: " + response.body());
+            throw new RuntimeException("Authentication failed.");
+        }
+    }
+
+    public byte[] downloadPackage(String apiId) throws Exception {
+        // Endpoint for capturing the full API configuration
+        String packageUrl = host + "/api/apis/" + apiId + "/package";
+        
+        System.out.println("⏳ Downloading package from: " + packageUrl);
+
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+                .uri(URI.create(packageUrl))
+                .header("Accept", "application/octet-stream");
+
+        // 5. Apply the captured security tokens
+        if (!csrfToken.isEmpty()) {
+            requestBuilder.header("Csrf-Token_bdn", csrfToken);
+        }
+        if (!authCookie.isEmpty()) {
+            requestBuilder.header("Cookie", authCookie);
+        }
+
+        HttpRequest request = requestBuilder.GET().build();
+        HttpResponse<byte[]> response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+
+        if (response.statusCode() == 200) {
+            System.out.println("✅ Package downloaded successfully (" + response.body().length + " bytes)");
+            return response.body();
+        } else {
+            System.err.println("❌ Failed to download package. Status: " + response.statusCode());
+            // If it's a 404/500, we try to read the error body as string
+            String errorMsg = new String(response.body(), StandardCharsets.UTF_8);
+            System.err.println("Error details: " + errorMsg);
+            throw new RuntimeException("Package download failed.");
+        }
+    }
+}
