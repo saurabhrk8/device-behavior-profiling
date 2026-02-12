@@ -1,113 +1,182 @@
-<dependency>
-    <groupId>com.fasterxml.jackson.dataformat</groupId>
-    <artifactId>jackson-dataformat-xml</artifactId>
-    <version>2.16.1</version>
-</dependency>
+package com.migration;
 
+import java.net.*;
+import java.net.http.*;
+import java.util.*;
+import java.util.stream.Collectors;
 
+public class AkanaClient {
+    private final String host;
+    private final HttpClient client;
+    private String csrfToken = "";
+    private String authCookie = "";
 
+    public AkanaClient(String host) {
+        this.host = host;
+        this.client = HttpClient.newBuilder()
+                .cookieHandler(new CookieManager())
+                .build();
+    }
+
+    public void login(String user, String pass, String domain) throws Exception {
+        // Prepare Form URL Encoded data
+        Map<String, String> formData = new HashMap<>();
+        formData.put("identity_username", user);
+        formData.put("secret_password", pass);
+        formData.put("domain", domain);
+
+        String formBody = formData.entrySet().stream()
+                .map(e -> URLEncoder.encode(e.getKey(), java.nio.charset.StandardCharsets.UTF_8) + "=" +
+                          URLEncoder.encode(e.getValue(), java.nio.charset.StandardCharsets.UTF_8))
+                .collect(Collectors.joining("&"));
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(host + "/api/login/ssLogin"))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .header("Accept", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(formBody))
+                .build();
+
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+        // Extract Tokens from Cookies
+        List<String> cookies = response.headers().allValues("set-cookie");
+        for (String cookie : cookies) {
+            if (cookie.contains("AtmoAuthToken_bdn")) this.authCookie = cookie.split(";")[0];
+            if (cookie.contains("Csrf-Token_bdn")) this.csrfToken = cookie.split(";")[0].split("=")[1];
+        }
+
+        if (response.statusCode() == 200) {
+            System.out.println("✅ Login Successful. Session captured.");
+        } else {
+            throw new RuntimeException("Login failed! Status: " + response.statusCode());
+        }
+    }
+
+    public byte[] downloadPackage(String apiId) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(host + "/api/apis/" + apiId + "/package"))
+                .header("Csrf-Token_bdn", csrfToken)
+                .header("Cookie", authCookie)
+                .header("Accept", "application/octet-stream")
+                .GET()
+                .build();
+
+        HttpResponse<byte[]> response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+        return response.body();
+    }
+}
+
+///////////////////
 
 package com.migration;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.dataformat.xml.XmlMapper;
 import java.io.*;
-import java.net.URI;
-import java.net.http.*;
 import java.nio.file.*;
 import java.util.zip.*;
 
-public class AkanaPackageTransformer {
-
-    private final HttpClient client = HttpClient.newBuilder().cookieHandler(new java.net.CookieManager()).build();
+public class ApigeeTransformer {
     private final XmlMapper xmlMapper = new XmlMapper();
 
-    public void migrate(String akanaUrl, String apiVersionId, String apigeeOrg, String token) throws Exception {
-        // 1. Download the .bin package
-        byte[] zipBytes = downloadPackage(akanaUrl + "/api/apis/versions/" + apiVersionId + "/package");
-        
-        // 2. Extract object.xml from the bytes
-        String objectXml = extractFileFromZip(zipBytes, "object.xml");
-        
-        // 3. Parse XML for Metadata (Name and Target URL)
-        JsonNode root = xmlMapper.readTree(objectXml.getBytes());
-        String apiName = root.path("Name").asText("Migrated_API");
-        // Note: You might need to adjust the path below based on your specific Akana XML structure
-        String targetEndPoint = root.findValue("ServiceAddress").asText("http://default-target.com");
-
-        System.out.println("📦 Processing API: " + apiName);
-
-        // 4. Create Apigee Bundle Structure
-        File apigeeZip = createApigeeBundle(apiName, targetEndPoint);
-        
-        // 5. Upload to Apigee
-        uploadToApigee(apigeeOrg, apiName, apigeeZip, token);
-    }
-
-    private byte[] downloadPackage(String url) throws Exception {
-        HttpRequest request = HttpRequest.newBuilder().uri(URI.create(url)).GET().build();
-        return client.send(request, HttpResponse.BodyHandlers.ofByteArray()).body();
-    }
-
-    private String extractFileFromZip(byte[] zipData, String fileName) throws IOException {
-        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipData))) {
+    public File transform(byte[] binContent, String apiId) throws Exception {
+        // 1. Extract object.xml
+        String objectXml = "";
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(binContent))) {
             ZipEntry entry;
             while ((entry = zis.getNextEntry()) != null) {
-                if (entry.getName().equals(fileName)) {
-                    return new String(zis.readAllBytes());
+                if (entry.getName().endsWith("object.xml")) {
+                    objectXml = new String(zis.readAllBytes());
+                    break;
                 }
             }
         }
-        throw new FileNotFoundException("Could not find " + fileName + " in Akana package");
-    }
 
-    private File createApigeeBundle(String name, String targetUrl) throws IOException {
-        Path tempDir = Files.createTempDirectory("apigee-bundle-");
-        Path apiProxyDir = Files.createDirectories(tempDir.resolve("apiproxy"));
+        if (objectXml.isEmpty()) throw new RuntimeException("object.xml not found in package!");
+
+        // 2. Parse XML for Metadata
+        JsonNode root = xmlMapper.readTree(objectXml.getBytes());
+        String apiName = root.path("Name").asText("Migrated_" + apiId);
         
-        // Create Proxies & Targets folders
-        Files.createDirectories(apiProxyDir.resolve("proxies"));
-        Files.createDirectories(apiProxyDir.resolve("targets"));
+        // Create Folder Structure
+        Path rootPath = Files.createTempDirectory("apiproxy_");
+        Path apiproxy = Files.createDirectories(rootPath.resolve("apiproxy"));
+        Files.createDirectories(apiproxy.resolve("proxies"));
+        Files.createDirectories(apiproxy.resolve("targets"));
 
-        // 1. Main Proxy XML
-        Files.writeString(apiProxyDir.resolve(name + ".xml"), 
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><APIProxy name=\"" + name + "\"/>");
+        // 3. Create Manifest
+        Files.writeString(apiproxy.resolve(apiName + ".xml"), "<?xml version=\"1.0\" encoding=\"UTF-8\"?><APIProxy name=\"" + apiName + "\"/>");
 
-        // 2. Default Target (Pointing to Akana's Backend)
-        String targetXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-                "<TargetEndpoint name=\"default\">\n" +
-                "  <HTTPTargetConnection><URL>" + targetUrl + "</URL></HTTPTargetConnection>\n" +
-                "</TargetEndpoint>";
-        Files.writeString(apiProxyDir.resolve("targets/default.xml"), targetXml);
+        // 4. Create ProxyEndpoint
+        String proxyContent = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ProxyEndpoint name=\"default\"><HTTPProxyConnection><BasePath>/" + apiName.toLowerCase() + "</BasePath></HTTPProxyConnection><RouteRule name=\"default\"><TargetEndpoint>default</TargetEndpoint></RouteRule></ProxyEndpoint>";
+        Files.writeString(apiproxy.resolve("proxies/default.xml"), proxyContent);
 
-        // 3. Default Proxy Endpoint
-        String proxyXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-                "<ProxyEndpoint name=\"default\">\n" +
-                "  <HTTPProxyConnection><BasePath>/" + name.toLowerCase().replace(" ", "-") + "</BasePath></HTTPProxyConnection>\n" +
-                "  <RouteRule name=\"default\"><TargetEndpoint>default</TargetEndpoint></RouteRule>\n" +
-                "</ProxyEndpoint>";
-        Files.writeString(apiProxyDir.resolve("proxies/default.xml"), proxyXml);
+        // 5. Create TargetEndpoint
+        String targetContent = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><TargetEndpoint name=\"default\"><HTTPTargetConnection><URL>http://mocktarget.apigee.net</URL></HTTPTargetConnection></TargetEndpoint>";
+        Files.writeString(apiproxy.resolve("targets/default.xml"), targetContent);
 
-        // Zip it up
-        File zipFile = new File(name + "-apigee.zip");
-        zipFolder(apiProxyDir, zipFile.toPath());
-        return zipFile;
-    }
-
-    private void zipFolder(Path source, Path target) throws IOException {
-        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(target.toFile()))) {
-            Files.walk(source).filter(path -> !Files.isDirectory(path)).forEach(path -> {
+        // 6. Zip everything
+        File finalZip = new File(apiName + ".zip");
+        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(finalZip))) {
+            Files.walk(apiproxy).filter(p -> !Files.isDirectory(p)).forEach(p -> {
                 try {
-                    zos.putNextEntry(new ZipEntry(source.relativize(path).toString().replace("\\", "/")));
-                    Files.copy(path, zos);
+                    zos.putNextEntry(new ZipEntry(apiproxy.relativize(p).toString().replace("\\", "/")));
+                    Files.copy(p, zos);
                     zos.closeEntry();
                 } catch (IOException e) { e.printStackTrace(); }
             });
         }
+        return finalZip;
     }
+}
+//////
 
-    private void uploadToApigee(String org, String name, File zip, String token) throws Exception {
-        // ... (Use the same upload logic from our previous conversation)
-        System.out.println("✅ Successfully uploaded " + name + " to Apigee.");
+package com.migration;
+
+import java.io.File;
+import java.util.Scanner;
+
+public class MigratorApp {
+    public static void main(String[] args) {
+        Scanner scanner = new Scanner(System.in);
+        
+        try {
+            System.out.print("Enter Akana Host (e.g., https://akana.corp.com): ");
+            String host = scanner.nextLine();
+            
+            System.out.print("Enter Domain: ");
+            String domain = scanner.nextLine();
+
+            System.out.print("Enter Username: ");
+            String user = scanner.nextLine();
+
+            System.out.print("Enter Password: ");
+            // In a real terminal, you'd use System.console().readPassword()
+            String pass = scanner.nextLine();
+
+            System.out.print("Enter Akana API ID to migrate: ");
+            String apiId = scanner.nextLine();
+
+            // Execute Flow
+            AkanaClient akana = new AkanaClient(host);
+            akana.login(user, pass, domain);
+
+            System.out.println("⏳ Downloading package...");
+            byte[] binData = akana.downloadPackage(apiId);
+            
+            System.out.println("⏳ Transforming to Apigee bundle...");
+            ApigeeTransformer transformer = new ApigeeTransformer();
+            File apigeeBundle = transformer.transform(binData, apiId);
+
+            System.out.println("✅ DONE! Created Apigee bundle: " + apigeeBundle.getAbsolutePath());
+            System.out.println("Next step: Import this ZIP into your Apigee UI.");
+
+        } catch (Exception e) {
+            System.err.println("❌ Error: " + e.getMessage());
+            e.printStackTrace();
+        } finally {
+            scanner.close();
+        }
     }
 }
