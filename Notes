@@ -1,8 +1,113 @@
-// ... after akana.downloadPackage(apiId)
-byte[] binData = akana.downloadPackage(apiId);
+package com.migration;
 
-// ADD THESE TWO LINES:
-java.nio.file.Path debugPath = java.nio.file.Paths.get("debug_package.zip");
-java.nio.file.Files.write(debugPath, binData);
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.dataformat.xml.XmlMapper;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.util.zip.*;
 
-System.out.println("📂 Raw package saved to: " + debugPath.toAbsolutePath());
+public class ApigeeTransformer {
+    private final XmlMapper xmlMapper = new XmlMapper();
+
+    /**
+     * Transforms Akana .bin content into an Apigee API Proxy Bundle
+     */
+    public File transform(byte[] binContent, String apiId) throws Exception {
+        System.out.println("🔍 Extracting metadata from Akana package...");
+        String xmlContent = "";
+
+        // 1. Extract 'objectdata.xml' from the byte array
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(binContent))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                // Use endsWith to catch it even if it's inside a subfolder
+                if (entry.getName().toLowerCase().endsWith("objectdata.xml")) {
+                    xmlContent = new String(zis.readAllBytes(), StandardCharsets.UTF_8);
+                    System.out.println("✅ Found metadata file: " + entry.getName());
+                    break;
+                }
+            }
+        }
+
+        if (xmlContent.isEmpty()) {
+            throw new RuntimeException("Could not find 'objectdata.xml' in the Akana package zip.");
+        }
+
+        // 2. Parse XML for API Name and Target Endpoint
+        JsonNode root = xmlMapper.readTree(xmlContent.getBytes());
+        
+        // Akana usually stores the name in a <Name> or <ResourceName> tag
+        String apiName = root.findPath("Name").asText("Migrated_API_" + apiId)
+                             .replaceAll("[^a-zA-Z0-9-_]", "_"); // Sanitize for Apigee
+        
+        // Akana usually stores the backend in <ServiceAddress> or <Location>
+        String targetUrl = root.findPath("ServiceAddress").asText("http://change-me-to-backend-url.com");
+
+        System.out.println("📦 API Name: " + apiName);
+        System.out.println("🎯 Target URL: " + targetUrl);
+
+        // 3. Build Apigee Bundle structure
+        return createApigeeZip(apiName, targetUrl);
+    }
+
+    private File createApigeeZip(String apiName, String targetUrl) throws IOException {
+        // Create a temporary working directory
+        Path tempDir = Files.createTempDirectory("apigee_build_");
+        Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
+        Path proxies = Files.createDirectories(apiproxy.resolve("proxies"));
+        Path targets = Files.createDirectories(apiproxy.resolve("targets"));
+
+        // A. Create the Base XML Manifest
+        String manifest = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+                "<APIProxy name=\"" + apiName + "\">\n" +
+                "    <ConfigurationVersion majorVersion=\"4\" minorVersion=\"0\"/>\n" +
+                "    <CreatedAt>123456789</CreatedAt>\n" +
+                "    <Description>Migrated from Akana</Description>\n" +
+                "    <DisplayName>" + apiName + "</DisplayName>\n" +
+                "</APIProxy>";
+        Files.writeString(apiproxy.resolve(apiName + ".xml"), manifest);
+
+        // B. Create the Proxy Endpoint (Inbound)
+        String proxyEndpoint = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+                "<ProxyEndpoint name=\"default\">\n" +
+                "    <HTTPProxyConnection>\n" +
+                "        <BasePath>/" + apiName.toLowerCase() + "</BasePath>\n" +
+                "    </HTTPProxyConnection>\n" +
+                "    <RouteRule name=\"default\">\n" +
+                "        <TargetEndpoint>default</TargetEndpoint>\n" +
+                "    </RouteRule>\n" +
+                "</ProxyEndpoint>";
+        Files.writeString(proxies.resolve("default.xml"), proxyEndpoint);
+
+        // C. Create the Target Endpoint (Outbound to backend)
+        String targetEndpoint = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+                "<TargetEndpoint name=\"default\">\n" +
+                "    <HTTPTargetConnection>\n" +
+                "        <URL>" + targetUrl + "</URL>\n" +
+                "    </HTTPTargetConnection>\n" +
+                "</TargetEndpoint>";
+        Files.writeString(targets.resolve("default.xml"), targetEndpoint);
+
+        // D. Zip the 'apiproxy' directory
+        File zipFile = new File(apiName + ".zip");
+        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
+            Files.walk(apiproxy).forEach(path -> {
+                if (!Files.isDirectory(path)) {
+                    // Entry must start with 'apiproxy/' for Apigee to accept it
+                    String zipPath = tempDir.relativize(path).toString().replace("\\", "/");
+                    try {
+                        zos.putNextEntry(new ZipEntry(zipPath));
+                        Files.copy(path, zos);
+                        zos.closeEntry();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+            });
+        }
+        
+        System.out.println("💾 Apigee Bundle created at: " + zipFile.getAbsolutePath());
+        return zipFile;
+    }
+}
