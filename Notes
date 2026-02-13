@@ -26,7 +26,6 @@ public class AkanaClient {
     public AkanaClient(String host) throws Exception {
         this.host = host.endsWith("/") ? host.substring(0, host.length() - 1) : host;
 
-        // Bypass SSL certificate validation (for intranet/self-signed certs)
         TrustManager[] trustAllCerts = new TrustManager[]{
             new X509TrustManager() {
                 public X509Certificate[] getAcceptedIssuers() { return null; }
@@ -59,7 +58,6 @@ public class AkanaClient {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(loginUrl))
                 .header("Content-Type", "application/x-www-form-urlencoded")
-                .header("Accept", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(formBody))
                 .build();
 
@@ -76,7 +74,7 @@ public class AkanaClient {
             }
             System.out.println("✅ Login Successful.");
         } else {
-            throw new RuntimeException("Login failed. Status: " + response.statusCode());
+            throw new RuntimeException("Login failed: " + response.statusCode());
         }
     }
 
@@ -87,39 +85,38 @@ public class AkanaClient {
                 .header("Csrf-Token_bdn", csrfToken)
                 .header("Cookie", authCookie)
                 .GET().build();
-        
-        HttpResponse<byte[]> response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
-        return response.statusCode() == 200 ? response.body() : null;
+        HttpResponse<byte[]> resp = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+        return resp.statusCode() == 200 ? resp.body() : null;
     }
 
     public String fetchOAS(String apiVersionId, String env) throws Exception {
-        // Attempt 1: Try OAS3 Endpoint
-        String oasUrl = host + "/api/apis/versions/" + apiVersionId + "/definition/oas3?Environment=" + env;
-        System.out.println("🌐 Fetching OAS from: " + oasUrl);
+        // Attempt 1: OAS3 with Env
+        String res = tryGet(host + "/api/apis/versions/" + apiVersionId + "/definition/oas3?Environment=" + env);
+        if (!res.isBlank()) return res;
 
+        // Attempt 2: General Definition
+        res = tryGet(host + "/api/apis/versions/" + apiVersionId + "/definition");
+        if (!res.isBlank()) return res;
+
+        // Attempt 3: OAS3 without Env query
+        return tryGet(host + "/api/apis/versions/" + apiVersionId + "/definition/oas3");
+    }
+
+    private String tryGet(String url) throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(oasUrl))
+                .uri(URI.create(url))
                 .header("Csrf-Token_bdn", csrfToken)
                 .header("Cookie", authCookie)
+                .header("Accept", "application/json")
                 .GET().build();
-
         HttpResponse<String> resp = client.send(request, HttpResponse.BodyHandlers.ofString());
-        if (resp.statusCode() == 200 && !resp.body().isBlank()) return resp.body();
-
-        // Attempt 2: Fallback to general definition
-        System.out.println("⚠️ OAS3 not found. Trying general definition...");
-        String fallbackUrl = host + "/api/apis/versions/" + apiVersionId + "/definition";
-        HttpRequest fallbackReq = HttpRequest.newBuilder()
-                .uri(URI.create(fallbackUrl))
-                .header("Csrf-Token_bdn", csrfToken)
-                .header("Cookie", authCookie)
-                .GET().build();
-        
-        return client.send(fallbackReq, HttpResponse.BodyHandlers.ofString()).body();
+        // Return blank if it's an error or returns HTML instead of JSON
+        if (resp.statusCode() != 200 || resp.body().contains("<!DOCTYPE html>")) return "";
+        return resp.body();
     }
 }
 
-//////////////////////////
+//////////////////////
 
 package com.migration;
 
@@ -135,15 +132,14 @@ public class ApigeeTransformer {
 
     public File transform(byte[] binContent, String apiId, String oasContent) throws Exception {
         String xmlContent = "";
-        String apiName = "Migrated_API_" + apiId;
-        String targetUrl = "https://backend-placeholder.com";
-
-        // 1. Extract Metadata XML safely
+        
+        // 1. Extract metadata from the Akana .bin package
         if (binContent != null && binContent.length > 0) {
             try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(binContent))) {
                 ZipEntry entry;
                 while ((entry = zis.getNextEntry()) != null) {
-                    if (entry.getName().toLowerCase().endsWith("objectdata.xml")) {
+                    String name = entry.getName().toLowerCase();
+                    if (name.endsWith("objectdata.xml") || name.endsWith("object.xml")) {
                         xmlContent = new String(zis.readAllBytes(), StandardCharsets.UTF_8);
                         break;
                     }
@@ -151,14 +147,24 @@ public class ApigeeTransformer {
             }
         }
 
-        // 2. Parse XML only if it exists and isn't empty (Prevents Prolog error)
-        if (xmlContent != null && !xmlContent.trim().isEmpty()) {
+        // 2. Determine API Name and Target URL
+        String apiName = "API_" + apiId; // Default
+        String targetUrl = "https://backend-placeholder.com";
+
+        if (xmlContent != null && !xmlContent.isBlank()) {
             try {
                 JsonNode root = xmlMapper.readTree(xmlContent.getBytes());
-                apiName = root.findPath("Name").asText(apiName).replaceAll("[^a-zA-Z0-9-_]", "_");
+                // Look for Name or ResourceName tags in Akana XML
+                JsonNode nameNode = root.findPath("Name");
+                if (nameNode.isMissingNode()) nameNode = root.findPath("ResourceName");
+                
+                if (!nameNode.isMissingNode()) {
+                    apiName = nameNode.asText().replaceAll("[^a-zA-Z0-9-_]", "_");
+                }
                 targetUrl = root.findPath("ServiceAddress").asText(targetUrl);
+                System.out.println("📦 Identified API: " + apiName);
             } catch (Exception e) {
-                System.err.println("⚠️ Warning: Metadata XML parsing failed. Using defaults.");
+                System.err.println("⚠️ Could not parse XML metadata. Using default naming.");
             }
         }
 
@@ -166,32 +172,46 @@ public class ApigeeTransformer {
     }
 
     private File createApigeeZip(String apiName, String targetUrl, String oasContent) throws IOException {
-        Path tempDir = Files.createTempDirectory("apigee_");
+        Path tempDir = Files.createTempDirectory("apigee_build_");
         Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
+        
+        // Folders
         Path proxies = Files.createDirectories(apiproxy.resolve("proxies"));
         Path targets = Files.createDirectories(apiproxy.resolve("targets"));
         Files.createDirectories(apiproxy.resolve("policies"));
         Path oasDir = Files.createDirectories(apiproxy.resolve("resources/oas"));
 
-        // Generate Apigee XML Files
+        // Manifest (e.g., apiproxy/MyAPI.xml)
         Files.writeString(apiproxy.resolve(apiName + ".xml"), 
-            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><APIProxy name=\"" + apiName + "\"/>");
-        Files.writeString(proxies.resolve("default.xml"), 
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ProxyEndpoint name=\"default\"><HTTPProxyConnection><BasePath>/" + apiName.toLowerCase() + "</BasePath></HTTPProxyConnection><RouteRule name=\"default\"><TargetEndpoint>default</TargetEndpoint></RouteRule></ProxyEndpoint>");
-        Files.writeString(targets.resolve("default.xml"), 
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><TargetEndpoint name=\"default\"><HTTPTargetConnection><URL>" + targetUrl + "</URL></HTTPTargetConnection></TargetEndpoint>");
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+            "<APIProxy name=\"" + apiName + "\">\n" +
+            "    <ConfigurationVersion majorVersion=\"4\" minorVersion=\"0\"/>\n" +
+            "    <DisplayName>" + apiName + "</DisplayName>\n" +
+            "</APIProxy>");
 
-        if (oasContent != null && !oasContent.trim().isEmpty()) {
+        // Proxy Endpoint
+        Files.writeString(proxies.resolve("default.xml"), 
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+            "<ProxyEndpoint name=\"default\"><HTTPProxyConnection><BasePath>/" + apiName.toLowerCase() + "</BasePath></HTTPProxyConnection><RouteRule name=\"default\"><TargetEndpoint>default</TargetEndpoint></RouteRule></ProxyEndpoint>");
+
+        // Target Endpoint
+        Files.writeString(targets.resolve("default.xml"), 
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+            "<TargetEndpoint name=\"default\"><HTTPTargetConnection><URL>" + targetUrl + "</URL></HTTPTargetConnection></TargetEndpoint>");
+
+        // OAS Resource
+        if (oasContent != null && !oasContent.isBlank()) {
             Files.writeString(oasDir.resolve("openapi.json"), oasContent);
+            System.out.println("📄 OAS specification added to bundle.");
         }
 
-        // Zip Creation
+        // Create the ZIP file
         File zipFile = new File(apiName + ".zip");
         try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
             Files.walk(apiproxy).filter(p -> !Files.isDirectory(p)).forEach(p -> {
                 try {
-                    String zipPath = tempDir.relativize(p).toString().replace("\\", "/");
-                    zos.putNextEntry(new ZipEntry(zipPath));
+                    String zipEntryName = tempDir.relativize(p).toString().replace("\\", "/");
+                    zos.putNextEntry(new ZipEntry(zipEntryName));
                     Files.copy(p, zos);
                     zos.closeEntry();
                 } catch (IOException e) { e.printStackTrace(); }
@@ -201,7 +221,7 @@ public class ApigeeTransformer {
     }
 }
 
-///////////////////////////////////////////
+//////////////////////
 
 package com.migration;
 
@@ -212,25 +232,25 @@ public class MigratorApp {
     public static void main(String[] args) {
         Scanner sc = new Scanner(System.in);
         try {
-            System.out.print("Enter Akana Host: "); String host = sc.nextLine();
-            System.out.print("Enter Domain: "); String domain = sc.nextLine();
-            System.out.print("Enter Username: "); String user = sc.nextLine();
-            System.out.print("Enter Password: "); String pass = sc.nextLine();
-            System.out.print("Enter API Version ID: "); String versionId = sc.nextLine();
+            System.out.print("Akana Host: "); String host = sc.nextLine();
+            System.out.print("Domain: "); String domain = sc.nextLine();
+            System.out.print("Username: "); String user = sc.nextLine();
+            System.out.print("Password: "); String pass = sc.nextLine();
+            System.out.print("API Version ID: "); String versionId = sc.nextLine();
 
             AkanaClient client = new AkanaClient(host);
             client.login(user, pass, domain);
             
-            System.out.println("⏳ Downloading package...");
+            System.out.println("⏳ Downloading Akana configuration package...");
             byte[] pkg = client.downloadPackage(versionId);
             
-            System.out.println("⏳ Fetching OAS definition...");
+            System.out.println("⏳ Fetching OAS/Swagger definition...");
             String oas = client.fetchOAS(versionId, "SIT");
 
             ApigeeTransformer transformer = new ApigeeTransformer();
             File result = transformer.transform(pkg, versionId, oas);
 
-            System.out.println("✅ DONE! Created: " + result.getAbsolutePath());
+            System.out.println("🏁 SUCCESS! Apigee Bundle created at: " + result.getAbsolutePath());
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
