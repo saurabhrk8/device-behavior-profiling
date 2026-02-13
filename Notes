@@ -1,5 +1,128 @@
 package com.migration;
 
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
+import java.net.CookieManager;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+public class AkanaClient {
+    private final String host;
+    private final HttpClient client;
+    private String csrfToken = "";
+    private String authCookie = "";
+
+    public AkanaClient(String host) throws Exception {
+        this.host = host.endsWith("/") ? host.substring(0, host.length() - 1) : host;
+
+        // Bypass SSL certificate validation (for intranet/self-signed certs)
+        TrustManager[] trustAllCerts = new TrustManager[]{
+            new X509TrustManager() {
+                public X509Certificate[] getAcceptedIssuers() { return null; }
+                public void checkClientTrusted(X509Certificate[] certs, String authType) {}
+                public void checkServerTrusted(X509Certificate[] certs, String authType) {}
+            }
+        };
+
+        SSLContext sslContext = SSLContext.getInstance("TLS");
+        sslContext.init(null, trustAllCerts, new SecureRandom());
+
+        this.client = HttpClient.newBuilder()
+                .sslContext(sslContext)
+                .cookieHandler(new CookieManager())
+                .build();
+    }
+
+    public void login(String user, String pass, String domain) throws Exception {
+        String loginUrl = host + "/api/login/ssoLogin";
+        Map<String, String> formData = new HashMap<>();
+        formData.put("identity_username", user);
+        formData.put("secret_password", pass);
+        formData.put("domain", domain);
+
+        String formBody = formData.entrySet().stream()
+                .map(e -> URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8) + "=" +
+                          URLEncoder.encode(e.getValue(), StandardCharsets.UTF_8))
+                .collect(Collectors.joining("&"));
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(loginUrl))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .header("Accept", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(formBody))
+                .build();
+
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+        if (response.statusCode() == 200) {
+            List<String> cookies = response.headers().allValues("set-cookie");
+            for (String cookie : cookies) {
+                if (cookie.contains("AtmoAuthToken_bdn")) this.authCookie = cookie.split(";")[0];
+                if (cookie.contains("Csrf-Token_bdn")) {
+                    String pair = cookie.split(";")[0];
+                    if (pair.contains("=")) this.csrfToken = pair.split("=")[1];
+                }
+            }
+            System.out.println("✅ Login Successful.");
+        } else {
+            throw new RuntimeException("Login failed. Status: " + response.statusCode());
+        }
+    }
+
+    public byte[] downloadPackage(String apiVersionId) throws Exception {
+        String url = host + "/api/apis/versions/" + apiVersionId + "/package";
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Csrf-Token_bdn", csrfToken)
+                .header("Cookie", authCookie)
+                .GET().build();
+        
+        HttpResponse<byte[]> response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+        return response.statusCode() == 200 ? response.body() : null;
+    }
+
+    public String fetchOAS(String apiVersionId, String env) throws Exception {
+        // Attempt 1: Try OAS3 Endpoint
+        String oasUrl = host + "/api/apis/versions/" + apiVersionId + "/definition/oas3?Environment=" + env;
+        System.out.println("🌐 Fetching OAS from: " + oasUrl);
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(oasUrl))
+                .header("Csrf-Token_bdn", csrfToken)
+                .header("Cookie", authCookie)
+                .GET().build();
+
+        HttpResponse<String> resp = client.send(request, HttpResponse.BodyHandlers.ofString());
+        if (resp.statusCode() == 200 && !resp.body().isBlank()) return resp.body();
+
+        // Attempt 2: Fallback to general definition
+        System.out.println("⚠️ OAS3 not found. Trying general definition...");
+        String fallbackUrl = host + "/api/apis/versions/" + apiVersionId + "/definition";
+        HttpRequest fallbackReq = HttpRequest.newBuilder()
+                .uri(URI.create(fallbackUrl))
+                .header("Csrf-Token_bdn", csrfToken)
+                .header("Cookie", authCookie)
+                .GET().build();
+        
+        return client.send(fallbackReq, HttpResponse.BodyHandlers.ofString()).body();
+    }
+}
+
+//////////////////////////
+
+package com.migration;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.dataformat.xml.XmlMapper;
 import java.io.*;
@@ -12,8 +135,10 @@ public class ApigeeTransformer {
 
     public File transform(byte[] binContent, String apiId, String oasContent) throws Exception {
         String xmlContent = "";
-        
-        // 1. Robust extraction of objectdata.xml
+        String apiName = "Migrated_API_" + apiId;
+        String targetUrl = "https://backend-placeholder.com";
+
+        // 1. Extract Metadata XML safely
         if (binContent != null && binContent.length > 0) {
             try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(binContent))) {
                 ZipEntry entry;
@@ -26,83 +151,90 @@ public class ApigeeTransformer {
             }
         }
 
-        // 2. Safe Parsing with Fallbacks
-        String apiName = "Migrated_API_" + apiId;
-        String targetUrl = "https://backend-placeholder.com";
-
+        // 2. Parse XML only if it exists and isn't empty (Prevents Prolog error)
         if (xmlContent != null && !xmlContent.trim().isEmpty()) {
             try {
                 JsonNode root = xmlMapper.readTree(xmlContent.getBytes());
-                // findPath is safer than path() as it searches deep
                 apiName = root.findPath("Name").asText(apiName).replaceAll("[^a-zA-Z0-9-_]", "_");
                 targetUrl = root.findPath("ServiceAddress").asText(targetUrl);
             } catch (Exception e) {
-                System.err.println("⚠️ Warning: Could not parse XML metadata. Using defaults.");
+                System.err.println("⚠️ Warning: Metadata XML parsing failed. Using defaults.");
             }
-        } else {
-            System.err.println("⚠️ Warning: No objectdata.xml found in package. Using defaults.");
         }
 
         return createApigeeZip(apiName, targetUrl, oasContent);
     }
 
     private File createApigeeZip(String apiName, String targetUrl, String oasContent) throws IOException {
-        Path tempDir = Files.createTempDirectory("apigee_bundle_");
+        Path tempDir = Files.createTempDirectory("apigee_");
         Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
-        
-        // Mandatory Folders
         Path proxies = Files.createDirectories(apiproxy.resolve("proxies"));
         Path targets = Files.createDirectories(apiproxy.resolve("targets"));
         Files.createDirectories(apiproxy.resolve("policies"));
         Path oasDir = Files.createDirectories(apiproxy.resolve("resources/oas"));
 
-        // A. Main Manifest
+        // Generate Apigee XML Files
         Files.writeString(apiproxy.resolve(apiName + ".xml"), 
-            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
-            "<APIProxy name=\"" + apiName + "\">\n" +
-            "    <ConfigurationVersion majorVersion=\"4\" minorVersion=\"0\"/>\n" +
-            "    <DisplayName>" + apiName + "</DisplayName>\n" +
-            "</APIProxy>");
-
-        // B. Proxy Endpoint
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><APIProxy name=\"" + apiName + "\"/>");
         Files.writeString(proxies.resolve("default.xml"), 
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-            "<ProxyEndpoint name=\"default\">\n" +
-            "    <HTTPProxyConnection>\n" +
-            "        <BasePath>/" + apiName.toLowerCase() + "</BasePath>\n" +
-            "    </HTTPProxyConnection>\n" +
-            "    <RouteRule name=\"default\">\n" +
-            "        <TargetEndpoint>default</TargetEndpoint>\n" +
-            "    </RouteRule>\n" +
-            "</ProxyEndpoint>");
-
-        // C. Target Endpoint
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ProxyEndpoint name=\"default\"><HTTPProxyConnection><BasePath>/" + apiName.toLowerCase() + "</BasePath></HTTPProxyConnection><RouteRule name=\"default\"><TargetEndpoint>default</TargetEndpoint></RouteRule></ProxyEndpoint>");
         Files.writeString(targets.resolve("default.xml"), 
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-            "<TargetEndpoint name=\"default\">\n" +
-            "    <HTTPTargetConnection>\n" +
-            "        <URL>" + targetUrl + "</URL>\n" +
-            "    </HTTPTargetConnection>\n" +
-            "</TargetEndpoint>");
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><TargetEndpoint name=\"default\"><HTTPTargetConnection><URL>" + targetUrl + "</URL></HTTPTargetConnection></TargetEndpoint>");
 
-        // D. OAS Spec
         if (oasContent != null && !oasContent.trim().isEmpty()) {
             Files.writeString(oasDir.resolve("openapi.json"), oasContent);
-            System.out.println("📄 OAS Spec added to bundle.");
         }
 
-        // E. Zip generation
+        // Zip Creation
         File zipFile = new File(apiName + ".zip");
         try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
             Files.walk(apiproxy).filter(p -> !Files.isDirectory(p)).forEach(p -> {
                 try {
-                    String zipEntryName = tempDir.relativize(p).toString().replace("\\", "/");
-                    zos.putNextEntry(new ZipEntry(zipEntryName));
+                    String zipPath = tempDir.relativize(p).toString().replace("\\", "/");
+                    zos.putNextEntry(new ZipEntry(zipPath));
                     Files.copy(p, zos);
                     zos.closeEntry();
                 } catch (IOException e) { e.printStackTrace(); }
             });
         }
         return zipFile;
+    }
+}
+
+///////////////////////////////////////////
+
+package com.migration;
+
+import java.io.File;
+import java.util.Scanner;
+
+public class MigratorApp {
+    public static void main(String[] args) {
+        Scanner sc = new Scanner(System.in);
+        try {
+            System.out.print("Enter Akana Host: "); String host = sc.nextLine();
+            System.out.print("Enter Domain: "); String domain = sc.nextLine();
+            System.out.print("Enter Username: "); String user = sc.nextLine();
+            System.out.print("Enter Password: "); String pass = sc.nextLine();
+            System.out.print("Enter API Version ID: "); String versionId = sc.nextLine();
+
+            AkanaClient client = new AkanaClient(host);
+            client.login(user, pass, domain);
+            
+            System.out.println("⏳ Downloading package...");
+            byte[] pkg = client.downloadPackage(versionId);
+            
+            System.out.println("⏳ Fetching OAS definition...");
+            String oas = client.fetchOAS(versionId, "SIT");
+
+            ApigeeTransformer transformer = new ApigeeTransformer();
+            File result = transformer.transform(pkg, versionId, oas);
+
+            System.out.println("✅ DONE! Created: " + result.getAbsolutePath());
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            sc.close();
+        }
     }
 }
