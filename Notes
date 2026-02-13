@@ -1,13 +1,124 @@
-Project_Name.zip
-└── apiproxy/
-    ├── [API_Name].xml          <-- The "Manifest" (Main config)
-    ├── proxies/
-    │   └── default.xml         <-- Inbound configuration (Basepath)
-    ├── targets/
-    │   └── default.xml         <-- Outbound configuration (Backend URL)
-    ├── resources/              <-- (Optional) Scripts and schemas
-    │   ├── jsc/                <-- JavaScript files
-    │   └── oas/                <-- OpenAPI/Swagger files
-    └── policies/               <-- (Optional) XML for specific logic
-        ├── Verify-API-Key.xml
-        └── Quota-Policy.xml
+package com.migration;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.dataformat.xml.XmlMapper;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.util.zip.*;
+
+public class ApigeeTransformer {
+    private final XmlMapper xmlMapper = new XmlMapper();
+
+    public File transform(byte[] binContent, String apiId) throws Exception {
+        System.out.println("🔍 Extracting metadata and resources from Akana package...");
+        String xmlContent = "";
+        String oasContent = "";
+        String oasFileName = "openapi.json"; // Default
+
+        // 1. Extract files from the Akana .bin
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(binContent))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                String name = entry.getName().toLowerCase();
+                
+                // Find Metadata
+                if (name.endsWith("objectdata.xml")) {
+                    xmlContent = new String(zis.readAllBytes(), StandardCharsets.UTF_8);
+                } 
+                // Find OpenAPI Spec (searching for common extensions)
+                else if (name.endsWith(".json") || name.endsWith(".yaml") || name.endsWith(".yml")) {
+                    // Simple heuristic: if it contains "openapi" or "swagger", it's likely our spec
+                    String content = new String(zis.readAllBytes(), StandardCharsets.UTF_8);
+                    if (content.contains("openapi") || content.contains("swagger")) {
+                        oasContent = content;
+                        oasFileName = entry.getName().substring(entry.getName().lastIndexOf("/") + 1);
+                    }
+                }
+            }
+        }
+
+        if (xmlContent.isEmpty()) {
+            throw new RuntimeException("Could not find 'objectdata.xml' in the Akana package.");
+        }
+
+        // 2. Parse XML for API Name and Target Endpoint
+        JsonNode root = xmlMapper.readTree(xmlContent.getBytes());
+        String apiName = root.findPath("Name").asText("Migrated_API_" + apiId)
+                             .replaceAll("[^a-zA-Z0-9-_]", "_");
+        
+        String targetUrl = root.findPath("ServiceAddress").asText("http://change-me.com");
+
+        System.out.println("📦 API Name: " + apiName);
+        System.out.println("🎯 Target URL: " + targetUrl);
+        if (!oasContent.isEmpty()) System.out.println("📄 Found OpenAPI Spec: " + oasFileName);
+
+        // 3. Build Apigee Bundle structure
+        return createApigeeZip(apiName, targetUrl, oasContent, oasFileName);
+    }
+
+    private File createApigeeZip(String apiName, String targetUrl, String oasContent, String oasName) throws IOException {
+        Path tempDir = Files.createTempDirectory("apigee_bundle_");
+        Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
+        
+        // Create standard folder structure
+        Path proxies = Files.createDirectories(apiproxy.resolve("proxies"));
+        Path targets = Files.createDirectories(apiproxy.resolve("targets"));
+        Path policies = Files.createDirectories(apiproxy.resolve("policies"));
+        Path resources = Files.createDirectories(apiproxy.resolve("resources"));
+        Path oasDir = Files.createDirectories(resources.resolve("oas"));
+
+        // A. Create Manifest
+        String manifest = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+                "<APIProxy name=\"" + apiName + "\">\n" +
+                "    <ConfigurationVersion majorVersion=\"4\" minorVersion=\"0\"/>\n" +
+                "    <Description>Migrated from Akana</Description>\n" +
+                "    <DisplayName>" + apiName + "</DisplayName>\n" +
+                "</APIProxy>";
+        Files.writeString(apiproxy.resolve(apiName + ".xml"), manifest);
+
+        // B. Create Proxy Endpoint
+        String proxyEndpoint = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+                "<ProxyEndpoint name=\"default\">\n" +
+                "    <HTTPProxyConnection>\n" +
+                "        <BasePath>/" + apiName.toLowerCase() + "</BasePath>\n" +
+                "    </HTTPProxyConnection>\n" +
+                "    <RouteRule name=\"default\">\n" +
+                "        <TargetEndpoint>default</TargetEndpoint>\n" +
+                "    </RouteRule>\n" +
+                "</ProxyEndpoint>";
+        Files.writeString(proxies.resolve("default.xml"), proxyEndpoint);
+
+        // C. Create Target Endpoint
+        String targetEndpoint = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+                "<TargetEndpoint name=\"default\">\n" +
+                "    <HTTPTargetConnection>\n" +
+                "        <URL>" + targetUrl + "</URL>\n" +
+                "    </HTTPTargetConnection>\n" +
+                "</TargetEndpoint>";
+        Files.writeString(targets.resolve("default.xml"), targetEndpoint);
+
+        // D. Add OAS Resource (if found)
+        if (!oasContent.isEmpty()) {
+            Files.writeString(oasDir.resolve(oasName), oasContent);
+        }
+
+        // E. Zip it all up
+        File zipFile = new File(apiName + ".zip");
+        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
+            Files.walk(apiproxy).forEach(path -> {
+                if (!Files.isDirectory(path)) {
+                    String zipPath = tempDir.relativize(path).toString().replace("\\", "/");
+                    try {
+                        zos.putNextEntry(new ZipEntry(zipPath));
+                        Files.copy(path, zos);
+                        zos.closeEntry();
+                    } catch (IOException e) { e.printStackTrace(); }
+                }
+            });
+        }
+        
+        System.out.println("💾 ZIP Bundle generated: " + zipFile.getName());
+        return zipFile;
+    }
+}
