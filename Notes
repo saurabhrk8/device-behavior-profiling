@@ -11,13 +11,13 @@ public class ApigeeTransformer {
 
     public File transform(byte[] binContent, String apiId, String oasContent) throws Exception {
         String objectXml = "";
-        String discoveredTargetUrl = "";
-        String largestDefContent = "";
-        String largestDefName = "";
+        String targetUrl = "";
+        String definitionBody = "";
+        String definitionName = "";
         long maxFileSize = -1;
-        Set<String> identifiedPolicies = new LinkedHashSet<>();
+        Set<String> actualPolicies = new LinkedHashSet<>();
 
-        // 1. Process Zip and identify the Largest File (OAS/WSDL)
+        // 1. Extract Files from Akana ZIP
         try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(binContent))) {
             ZipEntry entry;
             while ((entry = zis.getNextEntry()) != null) {
@@ -28,54 +28,50 @@ public class ApigeeTransformer {
                     objectXml = new String(bytes, StandardCharsets.UTF_8);
                 } else if (bytes.length > maxFileSize && (name.endsWith(".wsdl") || name.endsWith(".json"))) {
                     maxFileSize = bytes.length;
-                    largestDefContent = new String(bytes, StandardCharsets.UTF_8);
-                    largestDefName = name;
+                    definitionBody = new String(bytes, StandardCharsets.UTF_8);
+                    definitionName = name;
                 }
             }
         }
 
-        // 2. Extract API Name
+        // 2. Metadata Extraction
         String apiName = extractValue(objectXml, "Name", "API_" + apiId);
 
-        // 3. DEEP CRAWLER FOR POLICIES
-        // We scan for specific Akana policy indicators: PolicyName, PolicyType, and Quota values
-        String[] policyMarkers = {"PolicyName", "PolicyType", "Assertion", "Name"};
-        for (String marker : policyMarkers) {
-            Pattern p = Pattern.compile("<[^>]*?" + marker + "[^>]*?>(.*?)</[^>]*?" + marker + ">", Pattern.DOTALL);
-            Matcher m = p.matcher(objectXml);
-            while (m.find()) {
-                String val = m.group(1).replaceAll("<[^>]*>", "").trim();
-                if (isActualPolicy(val, apiName)) identifiedPolicies.add(val);
-            }
+        // 3. TARGETED POLICY EXTRACTION
+        // We look for 'PolicyName' inside 'PolicyAttachment' or 'Assertion' blocks only
+        Pattern p = Pattern.compile("<[^>]*?PolicyAttachment[^>]*?>.*?<[^>]*?PolicyName[^>]*?>(.*?)</[^>]*?PolicyName>", Pattern.DOTALL);
+        Matcher m = p.matcher(objectXml);
+        while (m.find()) {
+            String pName = m.group(1).trim();
+            // Filter out system noise (like localhost, visibility, etc)
+            if (isValidPolicy(pName)) actualPolicies.add(pName);
         }
 
-        // Search for Quota strings like "100tps" directly in text
-        Matcher quotaMatch = Pattern.compile("(\\d+tps|Quota\\s\\d+)", Pattern.CASE_INSENSITIVE).matcher(objectXml);
-        while (quotaMatch.find()) {
-            identifiedPolicies.add(quotaMatch.group(1).replace(" ", "_"));
+        // 4. WSDL TO OAS CONVERSION
+        String oasYaml = "";
+        if (definitionName.endsWith(".wsdl")) {
+            targetUrl = extractRegex(definitionBody, "soap:address\\s+location=\"(.*?)\"");
+            oasYaml = convertWsdlToOas(definitionBody, apiName, targetUrl);
+        } else {
+            oasYaml = definitionBody;
         }
 
-        // 4. Target URL & WSDL to OAS
-        if (largestDefName.endsWith(".wsdl")) {
-            discoveredTargetUrl = extractValue(largestDefContent, "soap:address\\s+location=\"(.*?)\"", "");
-            if (discoveredTargetUrl.isEmpty()) discoveredTargetUrl = extractTargetUrlFromMeta(objectXml);
-            largestDefContent = convertWsdlToOasYaml(largestDefContent, apiName, discoveredTargetUrl);
-        }
+        if (targetUrl.isEmpty()) targetUrl = extractTargetFromMeta(objectXml);
 
-        return createApigeeZip(apiName, discoveredTargetUrl, largestDefContent, identifiedPolicies);
+        return createApigeeBundle(apiName, targetUrl, oasYaml, actualPolicies);
     }
 
-    private boolean isActualPolicy(String val, String apiName) {
-        if (val.isEmpty() || val.length() > 60 || val.length() < 3) return false;
-        if (val.equalsIgnoreCase(apiName)) return false;
-        String v = val.toLowerCase();
-        // Ignore noise tags found in Akana metadata
-        return !v.contains("http") && !v.contains("visibility") && !v.contains("gateway") && !v.contains("uddi");
+    private boolean isValidPolicy(String name) {
+        String n = name.toLowerCase();
+        // These are common Akana system objects that are NOT API policies
+        List<String> blackList = Arrays.asList("visibility", "virtualhost", "uddi", "gateway", "domain", "host", "v1_");
+        for (String b : blackList) if (n.contains(b)) return false;
+        return name.length() > 2;
     }
 
-    private String convertWsdlToOasYaml(String wsdl, String name, String url) {
-        StringBuilder yaml = new StringBuilder("openapi: 3.0.0\ninfo:\n  title: " + name + "\n  version: 1.0.0\n");
-        yaml.append("servers:\n  - url: '" + (url.isEmpty() ? "http://backend" : url) + "'\npaths:\n");
+    private String convertWsdlToOas(String wsdl, String name, String url) {
+        StringBuilder sb = new StringBuilder("openapi: 3.0.0\ninfo:\n  title: " + name + "\n  version: 1.0.0\n");
+        sb.append("servers:\n  - url: '").append(url.isEmpty() ? "http://backend" : url).append("'\npaths:\n");
         
         Matcher m = Pattern.compile("operation\\s+name=\"(.*?)\"").matcher(wsdl);
         Set<String> ops = new HashSet<>();
@@ -83,25 +79,31 @@ public class ApigeeTransformer {
         
         if (ops.isEmpty()) ops.add("process");
         for (String op : ops) {
-            yaml.append("  /").append(op).append(":\n    post:\n      responses:\n        '200':\n          description: OK\n");
+            sb.append("  /").append(op).append(":\n    post:\n      summary: ").append(op).append("\n      responses:\n        '200':\n          description: OK\n");
         }
-        return yaml.toString();
+        return sb.toString();
     }
 
-    private String extractTargetUrlFromMeta(String xml) {
+    private String extractTargetFromMeta(String xml) {
         Pattern p = Pattern.compile("useType=\"endPoint\"[^>]*?>(.*?)</[\\w:]*?accessPoint>", Pattern.DOTALL);
         Matcher m = p.matcher(xml);
-        return m.find() ? m.group(1).trim() : "";
+        return m.find() ? m.group(1).trim() : "https://mocktarget.apigee.net";
     }
 
-    private String extractValue(String content, String tag, String def) {
+    private String extractValue(String xml, String tag, String def) {
         Pattern p = Pattern.compile("<(?:\\w+:)??" + tag + ">(.*?)</(?:\\w+:)??" + tag + ">", Pattern.DOTALL);
-        Matcher m = p.matcher(content);
+        Matcher m = p.matcher(xml);
         return m.find() ? m.group(1).trim() : def;
     }
 
-    private File createApigeeZip(String apiName, String targetUrl, String oasYaml, Set<String> policies) throws IOException {
-        Path tempDir = Files.createTempDirectory("apigee_pkg_");
+    private String extractRegex(String content, String regex) {
+        Pattern p = Pattern.compile(regex, Pattern.CASE_INSENSITIVE);
+        Matcher m = p.matcher(content);
+        return m.find() ? m.group(1).trim() : "";
+    }
+
+    private File createApigeeBundle(String apiName, String targetUrl, String oasYaml, Set<String> policies) throws IOException {
+        Path tempDir = Files.createTempDirectory("apigee_gen_");
         Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
         Path polDir = Files.createDirectories(apiproxy.resolve("policies"));
         Path proxDir = Files.createDirectories(apiproxy.resolve("proxies"));
@@ -111,25 +113,26 @@ public class ApigeeTransformer {
         StringBuilder polyManifest = new StringBuilder("<Policy>AM-Response-template</Policy>\n");
         StringBuilder preFlowSteps = new StringBuilder();
 
-        // 1. Generate Policies from Akana
         for (String p : policies) {
             String clean = p.replaceAll("[^a-zA-Z0-9-_]", "_");
             polyManifest.append("    <Policy>").append(clean).append("</Policy>\n");
             preFlowSteps.append("      <Step><Name>").append(clean).append("</Name></Step>\n");
 
-            String xml = p.toLowerCase().contains("tps") || p.toLowerCase().contains("quota") ?
+            // Map "Quota" in name to Quota Policy, else AssignMessage
+            String type = clean.toLowerCase().contains("quota") ? "Quota" : "AssignMessage";
+            String content = type.equals("Quota") ? 
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Quota name=\""+clean+"\"><Allow count=\"100\"/><Interval>1</Interval><TimeUnit>second</TimeUnit></Quota>" :
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?><AssignMessage name=\""+clean+"\"><AssignTo createNew=\"false\" type=\"request\"/></AssignMessage>";
-            Files.writeString(polDir.resolve(clean + ".xml"), xml);
+            Files.writeString(polDir.resolve(clean + ".xml"), content);
         }
 
-        // 2. Jai Ganesh Response Policy
+        // Response Template
         Files.writeString(polDir.resolve("AM-Response-template.xml"), 
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<AssignMessage name=\"AM-Response-template\">\n" +
             "  <Set><Payload contentType=\"application/json\">{\"Greeting\": \"Jai Ganesh\", \"timestamp\": \"{system.time}\"}</Payload></Set>\n" +
             "</AssignMessage>");
 
-        // 3. Folder XMLs
+        // Component XMLs
         Files.writeString(proxDir.resolve("default.xml"), 
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ProxyEndpoint name=\"default\">\n" +
             "  <PreFlow><Request>" + preFlowSteps.toString() + "</Request><Response><Step><Name>AM-Response-template</Name></Step></Response></PreFlow>\n" +
@@ -138,7 +141,7 @@ public class ApigeeTransformer {
 
         Files.writeString(targDir.resolve("default.xml"), 
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<TargetEndpoint name=\"default\">\n" +
-            "  <HTTPTargetConnection><URL>" + (targetUrl.isEmpty() ? "https://mocktarget.apigee.net" : targetUrl) + "</URL></HTTPTargetConnection>\n</TargetEndpoint>");
+            "  <HTTPTargetConnection><URL>" + targetUrl + "</URL></HTTPTargetConnection>\n</TargetEndpoint>");
 
         Files.writeString(apiproxy.resolve(apiName + ".xml"), 
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<APIProxy name=\"" + apiName + "\">\n" +
@@ -149,9 +152,8 @@ public class ApigeeTransformer {
 
         if (!oasYaml.isEmpty()) Files.writeString(resDir.resolve("openapi.yaml"), oasYaml);
 
-        // 4. Final ZIP Assembly
-        File finalZip = new File(apiName + ".zip");
-        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(finalZip))) {
+        File zipFile = new File(apiName + ".zip");
+        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
             Files.walk(apiproxy).filter(p -> !Files.isDirectory(p)).forEach(p -> {
                 try {
                     zos.putNextEntry(new ZipEntry(tempDir.relativize(p).toString().replace("\\", "/")));
@@ -160,6 +162,6 @@ public class ApigeeTransformer {
                 } catch (IOException e) { e.printStackTrace(); }
             });
         }
-        return finalZip;
+        return zipFile;
     }
 }
