@@ -1,125 +1,5 @@
 package com.migration;
 
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
-import java.net.CookieManager;
-import java.net.URI;
-import java.net.URLEncoder;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
-import java.security.SecureRandom;
-import java.security.cert.X509Certificate;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
-
-public class AkanaClient {
-    private final String host;
-    private final HttpClient client;
-    private String csrfToken = "";
-    private String authCookie = "";
-
-    public AkanaClient(String host) throws Exception {
-        this.host = host.endsWith("/") ? host.substring(0, host.length() - 1) : host;
-
-        TrustManager[] trustAllCerts = new TrustManager[]{
-            new X509TrustManager() {
-                public X509Certificate[] getAcceptedIssuers() { return null; }
-                public void checkClientTrusted(X509Certificate[] certs, String authType) {}
-                public void checkServerTrusted(X509Certificate[] certs, String authType) {}
-            }
-        };
-
-        SSLContext sslContext = SSLContext.getInstance("TLS");
-        sslContext.init(null, trustAllCerts, new SecureRandom());
-
-        this.client = HttpClient.newBuilder()
-                .sslContext(sslContext)
-                .cookieHandler(new CookieManager())
-                .build();
-    }
-
-    public void login(String user, String pass, String domain) throws Exception {
-        String loginUrl = host + "/api/login/ssoLogin";
-        Map<String, String> formData = new HashMap<>();
-        formData.put("identity_username", user);
-        formData.put("secret_password", pass);
-        formData.put("domain", domain);
-
-        String formBody = formData.entrySet().stream()
-                .map(e -> URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8) + "=" +
-                          URLEncoder.encode(e.getValue(), StandardCharsets.UTF_8))
-                .collect(Collectors.joining("&"));
-
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(loginUrl))
-                .header("Content-Type", "application/x-www-form-urlencoded")
-                .POST(HttpRequest.BodyPublishers.ofString(formBody))
-                .build();
-
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-
-        if (response.statusCode() == 200) {
-            List<String> cookies = response.headers().allValues("set-cookie");
-            for (String cookie : cookies) {
-                if (cookie.contains("AtmoAuthToken_bdn")) this.authCookie = cookie.split(";")[0];
-                if (cookie.contains("Csrf-Token_bdn")) {
-                    String pair = cookie.split(";")[0];
-                    if (pair.contains("=")) this.csrfToken = pair.split("=")[1];
-                }
-            }
-            System.out.println("✅ Login Successful.");
-        } else {
-            throw new RuntimeException("Login failed: " + response.statusCode());
-        }
-    }
-
-    public byte[] downloadPackage(String apiVersionId) throws Exception {
-        String url = host + "/api/apis/versions/" + apiVersionId + "/package";
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .header("Csrf-Token_bdn", csrfToken)
-                .header("Cookie", authCookie)
-                .GET().build();
-        HttpResponse<byte[]> resp = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
-        return resp.statusCode() == 200 ? resp.body() : null;
-    }
-
-    public String fetchOAS(String apiVersionId, String env) throws Exception {
-        // Attempt 1: OAS3 with Env
-        String res = tryGet(host + "/api/apis/versions/" + apiVersionId + "/definition/oas3?Environment=" + env);
-        if (!res.isBlank()) return res;
-
-        // Attempt 2: General Definition
-        res = tryGet(host + "/api/apis/versions/" + apiVersionId + "/definition");
-        if (!res.isBlank()) return res;
-
-        // Attempt 3: OAS3 without Env query
-        return tryGet(host + "/api/apis/versions/" + apiVersionId + "/definition/oas3");
-    }
-
-    private String tryGet(String url) throws Exception {
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .header("Csrf-Token_bdn", csrfToken)
-                .header("Cookie", authCookie)
-                .header("Accept", "application/json")
-                .GET().build();
-        HttpResponse<String> resp = client.send(request, HttpResponse.BodyHandlers.ofString());
-        // Return blank if it's an error or returns HTML instead of JSON
-        if (resp.statusCode() != 200 || resp.body().contains("<!DOCTYPE html>")) return "";
-        return resp.body();
-    }
-}
-
-//////////////////////
-
-package com.migration;
-
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.dataformat.xml.XmlMapper;
 import java.io.*;
@@ -133,7 +13,7 @@ public class ApigeeTransformer {
     public File transform(byte[] binContent, String apiId, String oasContent) throws Exception {
         String xmlContent = "";
         
-        // 1. Extract metadata from the Akana .bin package
+        // 1. Extract Akana Metadata
         if (binContent != null && binContent.length > 0) {
             try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(binContent))) {
                 ZipEntry entry;
@@ -147,24 +27,20 @@ public class ApigeeTransformer {
             }
         }
 
-        // 2. Determine API Name and Target URL
-        String apiName = "API_" + apiId; // Default
-        String targetUrl = "https://backend-placeholder.com";
+        String apiName = "hello-world"; // Defaulting to your example name format
+        String targetUrl = "https://mocktarget.apigee.net/user";
 
         if (xmlContent != null && !xmlContent.isBlank()) {
             try {
                 JsonNode root = xmlMapper.readTree(xmlContent.getBytes());
-                // Look for Name or ResourceName tags in Akana XML
                 JsonNode nameNode = root.findPath("Name");
                 if (nameNode.isMissingNode()) nameNode = root.findPath("ResourceName");
-                
                 if (!nameNode.isMissingNode()) {
                     apiName = nameNode.asText().replaceAll("[^a-zA-Z0-9-_]", "_");
                 }
                 targetUrl = root.findPath("ServiceAddress").asText(targetUrl);
-                System.out.println("📦 Identified API: " + apiName);
             } catch (Exception e) {
-                System.err.println("⚠️ Could not parse XML metadata. Using default naming.");
+                System.err.println("⚠️ XML Parsing failed, using defaults.");
             }
         }
 
@@ -176,42 +52,99 @@ public class ApigeeTransformer {
         Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
         
         // Folders
-        Path proxies = Files.createDirectories(apiproxy.resolve("proxies"));
-        Path targets = Files.createDirectories(apiproxy.resolve("targets"));
-        Files.createDirectories(apiproxy.resolve("policies"));
-        Path oasDir = Files.createDirectories(apiproxy.resolve("resources/oas"));
+        Path policiesDir = Files.createDirectories(apiproxy.resolve("policies"));
+        Path proxiesDir = Files.createDirectories(apiproxy.resolve("proxies"));
+        Path targetsDir = Files.createDirectories(apiproxy.resolve("targets"));
+        Path resourcesDir = Files.createDirectories(apiproxy.resolve("resources/oas"));
 
-        // Manifest (e.g., apiproxy/MyAPI.xml)
-        Files.writeString(apiproxy.resolve(apiName + ".xml"), 
-            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
-            "<APIProxy name=\"" + apiName + "\">\n" +
-            "    <ConfigurationVersion majorVersion=\"4\" minorVersion=\"0\"/>\n" +
-            "    <DisplayName>" + apiName + "</DisplayName>\n" +
-            "</APIProxy>");
+        // 1. Generate Manifest (hello-world.xml style)
+        String manifest = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+                "<APIProxy name=\"" + apiName + "\">\n" +
+                "  <DisplayName>" + apiName + "</DisplayName>\n" +
+                "  <Description>Migrated from Akana</Description>\n" +
+                "  <BasePaths>/" + apiName + "</BasePaths>\n" +
+                "  <Policies>\n" +
+                "    <Policy>AM-Response-template</Policy>\n" +
+                "    <Policy>Q-quotapolicy</Policy>\n" +
+                "  </Policies>\n" +
+                "  <ProxyEndpoints>\n" +
+                "    <ProxyEndpoint>default</ProxyEndpoint>\n" +
+                "  </ProxyEndpoints>\n" +
+                "  <TargetEndpoints>\n" +
+                "    <TargetEndpoint>default</TargetEndpoint>\n" +
+                "  </TargetEndpoints>\n" +
+                "</APIProxy>";
+        Files.writeString(apiproxy.resolve(apiName + ".xml"), manifest);
 
-        // Proxy Endpoint
-        Files.writeString(proxies.resolve("default.xml"), 
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-            "<ProxyEndpoint name=\"default\"><HTTPProxyConnection><BasePath>/" + apiName.toLowerCase() + "</BasePath></HTTPProxyConnection><RouteRule name=\"default\"><TargetEndpoint>default</TargetEndpoint></RouteRule></ProxyEndpoint>");
+        // 2. Generate Policies (Matching your example content)
+        Files.writeString(policiesDir.resolve("AM-Response-template.xml"), 
+                "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+                "<AssignMessage name=\"AM-Response-template\">\n" +
+                "  <Set>\n" +
+                "    <Payload contentType=\"application/json\" variablePrefix=\"%\" variableSuffix=\"%\">\n" +
+                "      {\n" +
+                "        \"Greeting\": \"Jai Ganesh\",\n" +
+                "        \"requestId\": \"%request.header.x-request-id%\",\n" +
+                "        \"timestamp\": \"%system.time%\"\n" +
+                "      }\n" +
+                "    </Payload>\n" +
+                "  </Set>\n" +
+                "  <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>\n" +
+                "  <AssignTo createNew=\"false\" transport=\"http\" type=\"request\"/>\n" +
+                "</AssignMessage>");
 
-        // Target Endpoint
-        Files.writeString(targets.resolve("default.xml"), 
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-            "<TargetEndpoint name=\"default\"><HTTPTargetConnection><URL>" + targetUrl + "</URL></HTTPTargetConnection></TargetEndpoint>");
+        Files.writeString(policiesDir.resolve("Q-quotapolicy.xml"), 
+                "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+                "<Quota name=\"Q-quotapolicy\" type=\"calendar\">\n" +
+                "  <Allow count=\"2000\"/>\n" +
+                "  <Interval>1</Interval>\n" +
+                "  <TimeUnit>month</TimeUnit>\n" +
+                "</Quota>");
 
-        // OAS Resource
+        // 3. Generate Proxy Endpoint (default.xml)
+        String proxyXml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+                "<ProxyEndpoint name=\"default\">\n" +
+                "  <PreFlow name=\"PreFlow\">\n" +
+                "    <Request>\n" +
+                "      <Step><Name>Q-quotapolicy</Name></Step>\n" +
+                "    </Request>\n" +
+                "    <Response>\n" +
+                "      <Step><Name>AM-Response-template</Name></Step>\n" +
+                "    </Response>\n" +
+                "  </PreFlow>\n" +
+                "  <HTTPProxyConnection>\n" +
+                "    <BasePath>/" + apiName + "</BasePath>\n" +
+                "  </HTTPProxyConnection>\n" +
+                "  <RouteRule name=\"default\">\n" +
+                "    <TargetEndpoint>default</TargetEndpoint>\n" +
+                "  </RouteRule>\n" +
+                "</ProxyEndpoint>";
+        Files.writeString(proxiesDir.resolve("default.xml"), proxyXml);
+
+        // 4. Generate Target Endpoint (default.xml)
+        String targetXml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+                "<TargetEndpoint name=\"default\">\n" +
+                "  <PreFlow name=\"PreFlow\"/>\n" +
+                "  <Flows/>\n" +
+                "  <PostFlow name=\"PostFlow\"/>\n" +
+                "  <HTTPTargetConnection>\n" +
+                "    <URL>" + targetUrl + "</URL>\n" +
+                "  </HTTPTargetConnection>\n" +
+                "</TargetEndpoint>";
+        Files.writeString(targetsDir.resolve("default.xml"), targetXml);
+
+        // 5. OAS Resource
         if (oasContent != null && !oasContent.isBlank()) {
-            Files.writeString(oasDir.resolve("openapi.json"), oasContent);
-            System.out.println("📄 OAS specification added to bundle.");
+            Files.writeString(resourcesDir.resolve("openapi.json"), oasContent);
         }
 
-        // Create the ZIP file
+        // 6. Final ZIP Assembly
         File zipFile = new File(apiName + ".zip");
         try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
             Files.walk(apiproxy).filter(p -> !Files.isDirectory(p)).forEach(p -> {
                 try {
-                    String zipEntryName = tempDir.relativize(p).toString().replace("\\", "/");
-                    zos.putNextEntry(new ZipEntry(zipEntryName));
+                    String zipPath = tempDir.relativize(p).toString().replace("\\", "/");
+                    zos.putNextEntry(new ZipEntry(zipPath));
                     Files.copy(p, zos);
                     zos.closeEntry();
                 } catch (IOException e) { e.printStackTrace(); }
@@ -221,40 +154,181 @@ public class ApigeeTransformer {
     }
 }
 
-//////////////////////
+//////////////////////////////////////
 
 package com.migration;
 
-import java.io.File;
-import java.util.Scanner;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.dataformat.xml.XmlMapper;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.util.*;
+import java.util.zip.*;
 
-public class MigratorApp {
-    public static void main(String[] args) {
-        Scanner sc = new Scanner(System.in);
-        try {
-            System.out.print("Akana Host: "); String host = sc.nextLine();
-            System.out.print("Domain: "); String domain = sc.nextLine();
-            System.out.print("Username: "); String user = sc.nextLine();
-            System.out.print("Password: "); String pass = sc.nextLine();
-            System.out.print("API Version ID: "); String versionId = sc.nextLine();
+public class ApigeeTransformer {
+    private final XmlMapper xmlMapper = new XmlMapper();
 
-            AkanaClient client = new AkanaClient(host);
-            client.login(user, pass, domain);
-            
-            System.out.println("⏳ Downloading Akana configuration package...");
-            byte[] pkg = client.downloadPackage(versionId);
-            
-            System.out.println("⏳ Fetching OAS/Swagger definition...");
-            String oas = client.fetchOAS(versionId, "SIT");
+    /**
+     * Transforms Akana content into a structured Apigee Proxy Bundle 
+     * matching the 'hello-world' structure.
+     */
+    public File transform(byte[] binContent, String apiId, String oasContent) throws Exception {
+        String xmlContent = "";
+        List<String> foundPolicyNames = new ArrayList<>();
 
-            ApigeeTransformer transformer = new ApigeeTransformer();
-            File result = transformer.transform(pkg, versionId, oas);
-
-            System.out.println("🏁 SUCCESS! Apigee Bundle created at: " + result.getAbsolutePath());
-        } catch (Exception e) {
-            e.printStackTrace();
-        } finally {
-            sc.close();
+        // 1. Extract and Analyze Akana Metadata
+        if (binContent != null && binContent.length > 0) {
+            try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(binContent))) {
+                ZipEntry entry;
+                while ((entry = zis.getNextEntry()) != null) {
+                    String entryName = entry.getName().toLowerCase();
+                    if (entryName.endsWith("objectdata.xml") || entryName.endsWith("object.xml")) {
+                        xmlContent = new String(zis.readAllBytes(), StandardCharsets.UTF_8);
+                        break;
+                    }
+                }
+            }
         }
+
+        String apiName = "API_" + apiId;
+        String targetUrl = "https://mocktarget.apigee.net/user";
+
+        if (xmlContent != null && !xmlContent.isBlank()) {
+            try {
+                JsonNode root = xmlMapper.readTree(xmlContent.getBytes());
+                
+                // Extract API Name
+                JsonNode nameNode = root.findPath("Name");
+                if (nameNode.isMissingNode()) nameNode = root.findPath("ResourceName");
+                if (!nameNode.isMissingNode()) {
+                    apiName = nameNode.asText().replaceAll("[^a-zA-Z0-9-_]", "_");
+                }
+                
+                // Extract Target URL
+                targetUrl = root.findPath("ServiceAddress").asText(targetUrl);
+
+                // Extract Policy References (handles <ns16:Policies>, <Policies>, etc.)
+                // findValues returns all matching nodes in the tree
+                List<JsonNode> policyNodes = root.findValues("Policies");
+                for (JsonNode node : policyNodes) {
+                    if (node.isArray()) {
+                        node.forEach(p -> foundPolicyNames.add(p.asText()));
+                    } else if (node.isTextual()) {
+                        foundPolicyNames.add(node.asText());
+                    } else if (node.has("PolicyName")) {
+                        foundPolicyNames.add(node.get("PolicyName").asText());
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("⚠️ Parsing error: Using defaults for naming/policies.");
+            }
+        }
+
+        return createApigeeZip(apiName, targetUrl, oasContent, foundPolicyNames);
+    }
+
+    private File createApigeeZip(String apiName, String targetUrl, String oasContent, List<String> policies) throws IOException {
+        Path tempDir = Files.createTempDirectory("apigee_gen_");
+        Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
+        
+        // Exact Folder Structure from Example
+        Path policiesDir = Files.createDirectories(apiproxy.resolve("policies"));
+        Path proxiesDir = Files.createDirectories(apiproxy.resolve("proxies"));
+        Path targetsDir = Files.createDirectories(apiproxy.resolve("targets"));
+        Path resOasDir = Files.createDirectories(apiproxy.resolve("resources/oas"));
+
+        // 1. Build Policy List for Manifest and PreFlow
+        StringBuilder manifestPolicies = new StringBuilder();
+        StringBuilder preFlowSteps = new StringBuilder();
+
+        // Always add the "Jai Ganesh" template policy first
+        manifestPolicies.append("    <Policy>AM-Response-template</Policy>\n");
+        
+        for (String pName : policies) {
+            String cleanPName = pName.replaceAll("[^a-zA-Z0-9-_]", "_");
+            manifestPolicies.append("    <Policy>").append(cleanPName).append("</Policy>\n");
+            preFlowSteps.append("      <Step>\n        <Name>").append(cleanPName).append("</Name>\n      </Step>\n");
+            
+            // Generate Individual Policy XML (Defaulting to Quota structure per your sample)
+            String quotaXml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+                    "<Quota name=\"" + cleanPName + "\" type=\"calendar\">\n" +
+                    "  <Allow count=\"2000\"/>\n" +
+                    "  <Interval>1</Interval>\n" +
+                    "  <TimeUnit>month</TimeUnit>\n" +
+                    "</Quota>";
+            Files.writeString(policiesDir.resolve(cleanPName + ".xml"), quotaXml);
+        }
+
+        // Generate the mandatory AM-Response-template.xml
+        String amXml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+                "<AssignMessage name=\"AM-Response-template\">\n" +
+                "  <Set>\n" +
+                "    <Payload contentType=\"application/json\">\n" +
+                "      {\n" +
+                "        \"Greeting\": \"Jai Ganesh\",\n" +
+                "        \"requestId\": \"{request.header.x-request-id}\",\n" +
+                "        \"timestamp\": \"{system.time}\"\n" +
+                "      }\n" +
+                "    </Payload>\n" +
+                "  </Set>\n" +
+                "</AssignMessage>";
+        Files.writeString(policiesDir.resolve("AM-Response-template.xml"), amXml);
+
+        // 2. Main Manifest XML (apiproxy/name.xml)
+        String manifest = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+                "<APIProxy name=\"" + apiName + "\">\n" +
+                "  <DisplayName>" + apiName + "</DisplayName>\n" +
+                "  <BasePaths>/" + apiName.toLowerCase() + "</BasePaths>\n" +
+                "  <Policies>\n" + manifestPolicies.toString() + "  </Policies>\n" +
+                "  <ProxyEndpoints>\n    <ProxyEndpoint>default</ProxyEndpoint>\n  </ProxyEndpoints>\n" +
+                "  <TargetEndpoints>\n    <TargetEndpoint>default</TargetEndpoint>\n  </TargetEndpoints>\n" +
+                "</APIProxy>";
+        Files.writeString(apiproxy.resolve(apiName + ".xml"), manifest);
+
+        // 3. Proxy Endpoint (proxies/default.xml)
+        String proxyXml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+                "<ProxyEndpoint name=\"default\">\n" +
+                "  <PreFlow name=\"PreFlow\">\n" +
+                "    <Request>\n" + preFlowSteps.toString() + "    </Request>\n" +
+                "    <Response>\n      <Step>\n        <Name>AM-Response-template</Name>\n      </Step>\n    </Response>\n" +
+                "  </PreFlow>\n" +
+                "  <HTTPProxyConnection>\n" +
+                "    <BasePath>/" + apiName.toLowerCase() + "</BasePath>\n" +
+                "  </HTTPProxyConnection>\n" +
+                "  <RouteRule name=\"default\">\n" +
+                "    <TargetEndpoint>default</TargetEndpoint>\n" +
+                "  </RouteRule>\n" +
+                "</ProxyEndpoint>";
+        Files.writeString(proxiesDir.resolve("default.xml"), proxyXml);
+
+        // 4. Target Endpoint (targets/default.xml)
+        String targetXml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+                "<TargetEndpoint name=\"default\">\n" +
+                "  <PreFlow name=\"PreFlow\"/>\n" +
+                "  <HTTPTargetConnection>\n" +
+                "    <URL>" + targetUrl + "</URL>\n" +
+                "  </HTTPTargetConnection>\n" +
+                "</TargetEndpoint>";
+        Files.writeString(targetsDir.resolve("default.xml"), targetXml);
+
+        // 5. OAS Resource
+        if (oasContent != null && !oasContent.isBlank()) {
+            Files.writeString(resOasDir.resolve("openapi.json"), oasContent);
+        }
+
+        // 6. Final Zip Generation
+        File finalZip = new File(apiName + ".zip");
+        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(finalZip))) {
+            Files.walk(apiproxy).filter(p -> !Files.isDirectory(p)).forEach(p -> {
+                try {
+                    String zipEntryName = tempDir.relativize(p).toString().replace("\\", "/");
+                    zos.putNextEntry(new ZipEntry(zipEntryName));
+                    Files.copy(p, zos);
+                    zos.closeEntry();
+                } catch (IOException e) { e.printStackTrace(); }
+            });
+        }
+        return finalZip;
     }
 }
