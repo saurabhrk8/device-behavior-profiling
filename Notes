@@ -13,16 +13,17 @@ public class ApigeeTransformer {
 
     public File transform(byte[] binContent, String apiId, String oasContent) throws Exception {
         String xmlContent = "";
-        List<String> akanaPolicies = new ArrayList<>();
-        String targetUrl = "https://placeholder-target.com";
+        String targetUrl = ""; 
         String apiName = "API_" + apiId;
+        List<Map<String, String>> extractedPolicies = new ArrayList<>();
 
-        // 1. Extract and Parse Akana Metadata
+        // 1. Extract Akana Metadata
         if (binContent != null && binContent.length > 0) {
             try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(binContent))) {
                 ZipEntry entry;
                 while ((entry = zis.getNextEntry()) != null) {
-                    if (entry.getName().toLowerCase().endsWith("objectdata.xml") || entry.getName().toLowerCase().endsWith("object.xml")) {
+                    String name = entry.getName().toLowerCase();
+                    if (name.endsWith("objectdata.xml") || name.endsWith("object.xml")) {
                         xmlContent = new String(zis.readAllBytes(), StandardCharsets.UTF_8);
                         break;
                     }
@@ -36,103 +37,110 @@ public class ApigeeTransformer {
             // A. Extract Name
             apiName = root.findPath("Name").asText(apiName).replaceAll("[^a-zA-Z0-9-_]", "_");
 
-            // B. Extract Real Target URL from <ns5:accessPoint useType="endPoint">
-            // We use findParents to find the accessPoint node and verify useType
-            List<JsonNode> accessPoints = root.findParents("accessPoint");
-            for (JsonNode ap : accessPoints) {
-                JsonNode node = ap.path("accessPoint");
-                if (node.path("useType").asText().equals("endPoint")) {
+            // B. Targeted URL Extraction (Searching for accessPoint with useType="endPoint")
+            // This searches every node in the XML for the 'accessPoint' field
+            List<JsonNode> allAccessPoints = root.findValues("accessPoint");
+            for (JsonNode node : allAccessPoints) {
+                // Check for useType attribute or child node
+                String useType = node.findPath("useType").asText();
+                if ("endPoint".equalsIgnoreCase(useType)) {
+                    // In some Akana versions, the URL is the text value of the node itself
                     targetUrl = node.asText();
-                    break; 
+                    break;
                 }
             }
+            
+            // Fallback: If targetUrl is still empty, look for any node containing "http"
+            if (targetUrl.isBlank()) {
+                targetUrl = findFirstHttpUrl(root);
+            }
 
-            // C. Extract Policies
-            root.findValues("PolicyName").forEach(p -> akanaPolicies.add(p.asText()));
+            // C. Policy Extraction
+            // We search for policy nodes to get both the Name and potentially the Config
+            List<JsonNode> policyNodes = root.findParents("PolicyName");
+            for (JsonNode pNode : policyNodes) {
+                Map<String, String> pData = new HashMap<>();
+                pData.put("name", pNode.path("PolicyName").asText());
+                pData.put("type", pNode.path("PolicyType").asText("AssignMessage"));
+                extractedPolicies.add(pData);
+            }
         }
 
-        return createApigeeZip(apiName, targetUrl, oasContent, akanaPolicies);
+        return createApigeeZip(apiName, targetUrl, oasContent, extractedPolicies);
     }
 
-    private File createApigeeZip(String apiName, String targetUrl, String oasContent, List<String> policies) throws IOException {
+    private String findFirstHttpUrl(JsonNode node) {
+        if (node.isTextual() && node.asText().startsWith("http")) {
+            return node.asText();
+        }
+        for (JsonNode child : node) {
+            String found = findFirstHttpUrl(child);
+            if (!found.isEmpty()) return found;
+        }
+        return "";
+    }
+
+    private File createApigeeZip(String apiName, String targetUrl, String oasContent, List<Map<String, String>> policies) throws IOException {
         Path tempDir = Files.createTempDirectory("apigee_bundle_");
         Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
         Path policiesDir = Files.createDirectories(apiproxy.resolve("policies"));
         Path proxiesDir = Files.createDirectories(apiproxy.resolve("proxies"));
         Path targetsDir = Files.createDirectories(apiproxy.resolve("targets"));
-        Path resOasDir = Files.createDirectories(apiproxy.resolve("resources/oas"));
 
-        // 1. Manifest XML
-        StringBuilder policyList = new StringBuilder("<Policy>AM-Response-template</Policy>\n");
-        for (String p : policies) {
-            policyList.append("    <Policy>").append(p).append("</Policy>\n");
+        // 1. Build Policy XMLs and Manifest list
+        StringBuilder manifestPolicies = new StringBuilder();
+        StringBuilder preFlowSteps = new StringBuilder();
+
+        for (Map<String, String> p : policies) {
+            String pName = p.get("name").replaceAll("[^a-zA-Z0-9-_]", "_");
+            manifestPolicies.append("    <Policy>").append(pName).append("</Policy>\n");
+            preFlowSteps.append("      <Step><Name>").append(pName).append("</Name></Step>\n");
+
+            // Create policy file based on Akana type
+            String policyXml = generateApigeePolicyXml(pName, p.get("type"));
+            Files.writeString(policiesDir.resolve(pName + ".xml"), policyXml);
         }
 
+        // 2. Manifest
         String manifest = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
                 "<APIProxy name=\"" + apiName + "\">\n" +
-                "  <DisplayName>" + apiName + "</DisplayName>\n" +
                 "  <BasePaths>/" + apiName.toLowerCase() + "</BasePaths>\n" +
-                "  <Policies>\n" + policyList.toString() + "  </Policies>\n" +
+                "  <Policies>\n" + manifestPolicies.toString() + "  </Policies>\n" +
                 "  <ProxyEndpoints><ProxyEndpoint>default</ProxyEndpoint></ProxyEndpoints>\n" +
                 "  <TargetEndpoints><TargetEndpoint>default</TargetEndpoint></TargetEndpoints>\n" +
                 "</APIProxy>";
         Files.writeString(apiproxy.resolve(apiName + ".xml"), manifest);
 
-        // 2. Generate Policies (Real templates)
-        generatePolicyFiles(policiesDir, policies);
-
         // 3. Proxy Endpoint
-        StringBuilder steps = new StringBuilder();
-        for (String p : policies) {
-            steps.append("      <Step><Name>").append(p).append("</Name></Step>\n");
-        }
-        
-        String proxyXml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+        String proxyXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
                 "<ProxyEndpoint name=\"default\">\n" +
                 "  <PreFlow name=\"PreFlow\">\n" +
-                "    <Request>\n" + steps.toString() + "    </Request>\n" +
-                "    <Response><Step><Name>AM-Response-template</Name></Step></Response>\n" +
+                "    <Request>\n" + preFlowSteps.toString() + "    </Request>\n" +
+                "    <Response/>\n" +
                 "  </PreFlow>\n" +
                 "  <HTTPProxyConnection><BasePath>/" + apiName.toLowerCase() + "</BasePath></HTTPProxyConnection>\n" +
                 "  <RouteRule name=\"default\"><TargetEndpoint>default</TargetEndpoint></RouteRule>\n" +
                 "</ProxyEndpoint>";
         Files.writeString(proxiesDir.resolve("default.xml"), proxyXml);
 
-        // 4. Target Endpoint (Using Real URL)
-        String targetXml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+        // 4. Target Endpoint (FIXED URL)
+        String targetXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
                 "<TargetEndpoint name=\"default\">\n" +
                 "  <HTTPTargetConnection>\n" +
-                "    <URL>" + targetUrl + "</URL>\n" +
+                "    <URL>" + (targetUrl.isBlank() ? "https://change-me-in-akana.com" : targetUrl) + "</URL>\n" +
                 "  </HTTPTargetConnection>\n" +
                 "</TargetEndpoint>";
         Files.writeString(targetsDir.resolve("default.xml"), targetXml);
 
-        if (oasContent != null && !oasContent.isBlank()) {
-            Files.writeString(resOasDir.resolve("openapi.json"), oasContent);
-        }
-
         return finalizeZip(apiName, tempDir, apiproxy);
     }
 
-    private void generatePolicyFiles(Path dir, List<String> policies) throws IOException {
-        // Template Response Policy
-        Files.writeString(dir.resolve("AM-Response-template.xml"), 
-            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
-            "<AssignMessage name=\"AM-Response-template\">\n" +
-            "  <Set><Payload contentType=\"application/json\">{\"Greeting\": \"Jai Ganesh\"}</Payload></Set>\n" +
-            "</AssignMessage>");
-
-        for (String p : policies) {
-            String content;
-            if (p.toLowerCase().contains("quota")) {
-                content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Quota name=\""+p+"\"><Allow count=\"2000\"/><Interval>1</Interval><TimeUnit>month</TimeUnit></Quota>";
-            } else if (p.toLowerCase().contains("security") || p.toLowerCase().contains("auth")) {
-                content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><VerifyAPIKey name=\""+p+"\"><APIKey ref=\"request.header.apikey\"/></VerifyAPIKey>";
-            } else {
-                content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><AssignMessage name=\""+p+"\"><AssignTo createNew=\"false\" type=\"request\"/></AssignMessage>";
-            }
-            Files.writeString(dir.resolve(p + ".xml"), content);
+    private String generateApigeePolicyXml(String name, String type) {
+        if (type.toLowerCase().contains("quota")) {
+            return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Quota name=\"" + name + "\">\n  <Allow count=\"2000\"/>\n  <Interval>1</Interval>\n  <TimeUnit>month</TimeUnit>\n</Quota>";
         }
+        // Default to AssignMessage if we don't know the mapping yet
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<AssignMessage name=\"" + name + "\">\n  <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>\n  <AssignTo createNew=\"false\" transport=\"http\" type=\"request\"/>\n</AssignMessage>";
     }
 
     private File finalizeZip(String apiName, Path tempDir, Path apiproxy) throws IOException {
