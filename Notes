@@ -165,3 +165,6 @@ public class ApigeeTransformer {
                 } catch (IOException e) { e.printStackTrace(); }
             });
         }
+        return zipFile;
+    }
+}
