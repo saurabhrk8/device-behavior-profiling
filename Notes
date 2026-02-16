@@ -26,88 +26,107 @@ public class ApigeeTransformer {
             }
         }
 
-        // 2. Extract Data using Regex (Ignores namespaces like ns5: or ns16:)
-        String apiName = extractValue(xmlContent, "Name", "API_" + apiId);
+        // 2. Aggressive Extraction (Handles namespaces ns16, ns5, etc.)
+        String apiName = extractRegex(xmlContent, "Name", "API_" + apiId);
         String targetUrl = extractTargetUrl(xmlContent);
-        List<String> policies = extractPolicies(xmlContent);
+        
+        // Find policies using multiple possible Akana tags
+        Set<String> policies = new LinkedHashSet<>();
+        policies.addAll(extractList(xmlContent, "PolicyName"));
+        policies.addAll(extractList(xmlContent, "Name")); // Fallback if policy names are in generic Name tags
 
-        // 3. Create the Apigee Bundle
         return createApigeeZip(apiName, targetUrl, oasContent, policies);
     }
 
-    private String extractValue(String xml, String tag, String defaultValue) {
+    private String extractRegex(String xml, String tag, String defaultValue) {
         Pattern p = Pattern.compile("<(?:\\w+:)??" + tag + ">(.*?)</(?:\\w+:)??" + tag + ">", Pattern.DOTALL);
         Matcher m = p.matcher(xml);
         return m.find() ? m.group(1).trim() : defaultValue;
     }
 
+    private List<String> extractList(String xml, String tag) {
+        List<String> results = new ArrayList<>();
+        // Look for the tag but ensure it's inside a Policy-related parent block
+        Pattern p = Pattern.compile("<(?:\\w+:)??" + tag + ">(.*?)</(?:\\w+:)??" + tag + ">");
+        Matcher m = p.matcher(xml);
+        while (m.find()) {
+            String val = m.group(1).trim();
+            // Filter out the API Name itself if it's captured by mistake
+            if (!val.isEmpty() && val.length() < 100) results.add(val);
+        }
+        return results;
+    }
+
     private String extractTargetUrl(String xml) {
-        // Specifically looks for <accessPoint useType="endPoint"> regardless of namespace
+        // Precise search for endPoint useType
         Pattern p = Pattern.compile("<[\\w:]*?accessPoint\\s+[^>]*?useType=\"endPoint\"[^>]*?>(.*?)</[\\w:]*?accessPoint>", Pattern.DOTALL);
         Matcher m = p.matcher(xml);
         if (m.find()) return m.group(1).trim();
-        
-        // Fallback: look for any URL inside accessPoint
-        return extractValue(xml, "accessPoint", "https://backend-not-found.com");
+        return "https://backend-url-not-found-in-xml.com";
     }
 
-    private List<String> extractPolicies(String xml) {
-        Set<String> policyNames = new LinkedHashSet<>();
-        // Searches for PolicyName tags inside the XML
-        Pattern p = Pattern.compile("<(?:\\w+:)??" + "PolicyName" + ">(.*?)</(?:\\w+:)??" + "PolicyName" + ">");
-        Matcher m = p.matcher(xml);
-        while (m.find()) {
-            policyNames.add(m.group(1).trim());
-        }
-        return new ArrayList<>(policyNames);
-    }
-
-    private File createApigeeZip(String apiName, String targetUrl, String oasContent, List<String> policies) throws IOException {
+    private File createApigeeZip(String apiName, String targetUrl, String oasContent, Set<String> policies) throws IOException {
         Path tempDir = Files.createTempDirectory("apigee_bundle_");
         Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
         Path policiesDir = Files.createDirectories(apiproxy.resolve("policies"));
         Path proxiesDir = Files.createDirectories(apiproxy.resolve("proxies"));
         Path targetsDir = Files.createDirectories(apiproxy.resolve("targets"));
 
-        // A. Generate Manifest (apiproxy/name.xml)
-        StringBuilder polyEntries = new StringBuilder();
-        for (String p : policies) polyEntries.append("    <Policy>").append(p).append("</Policy>\n");
+        // A. Build Policy List (Registration)
+        StringBuilder polyManifest = new StringBuilder("<Policy>AM-Response-template</Policy>\n");
+        StringBuilder requestSteps = new StringBuilder();
 
+        for (String pName : policies) {
+            // Skip the API name if it was caught in the policy scan
+            if (pName.equalsIgnoreCase(apiName)) continue;
+
+            String cleanName = pName.replaceAll("[^a-zA-Z0-9-_]", "_");
+            polyManifest.append("    <Policy>").append(cleanName).append("</Policy>\n");
+            requestSteps.append("      <Step><Name>").append(cleanName).append("</Name></Step>\n");
+
+            // Generate the XML file for the policy (Defaulting to AssignMessage)
+            String pXml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+                          "<AssignMessage name=\"" + cleanName + "\">\n" +
+                          "  <DisplayName>" + cleanName + "</DisplayName>\n" +
+                          "  <AssignTo createNew=\"false\" transport=\"http\" type=\"request\"/>\n" +
+                          "</AssignMessage>";
+            Files.writeString(policiesDir.resolve(cleanName + ".xml"), pXml);
+        }
+
+        // Generate the "Jai Ganesh" template requested
+        String jaiGanesh = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+                "<AssignMessage name=\"AM-Response-template\">\n" +
+                "  <Set>\n" +
+                "    <Payload contentType=\"application/json\" variablePrefix=\"%\" variableSuffix=\"%\">\n" +
+                "      {\"Greeting\": \"Jai Ganesh\", \"timestamp\": \"%system.time%\"}\n" +
+                "    </Payload>\n" +
+                "  </Set>\n" +
+                "</AssignMessage>";
+        Files.writeString(policiesDir.resolve("AM-Response-template.xml"), jaiGanesh);
+
+        // B. API Proxy Manifest
         String manifest = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
                 "<APIProxy name=\"" + apiName + "\">\n" +
                 "  <BasePaths>/" + apiName.toLowerCase() + "</BasePaths>\n" +
-                "  <Policies>\n" + polyEntries.toString() + "  </Policies>\n" +
+                "  <Policies>\n" + polyManifest.toString() + "  </Policies>\n" +
                 "  <ProxyEndpoints><ProxyEndpoint>default</ProxyEndpoint></ProxyEndpoints>\n" +
                 "  <TargetEndpoints><TargetEndpoint>default</TargetEndpoint></TargetEndpoints>\n" +
                 "</APIProxy>";
         Files.writeString(apiproxy.resolve(apiName + ".xml"), manifest);
 
-        // B. Generate Policy Files (Exactly as they appear in Akana)
-        for (String pName : policies) {
-            String pXml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
-                          "<AssignMessage name=\"" + pName + "\">\n" +
-                          "  <DisplayName>" + pName + "</DisplayName>\n" +
-                          "  <AssignTo createNew=\"false\" transport=\"http\" type=\"request\"/>\n" +
-                          "</AssignMessage>";
-            Files.writeString(policiesDir.resolve(pName + ".xml"), pXml);
-        }
-
-        // C. Generate Proxy Endpoint (default.xml)
-        StringBuilder steps = new StringBuilder();
-        for (String p : policies) steps.append("      <Step><Name>").append(p).append("</Name></Step>\n");
-
+        // C. Proxy Endpoint
         String proxyXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
                 "<ProxyEndpoint name=\"default\">\n" +
                 "  <PreFlow name=\"PreFlow\">\n" +
-                "    <Request>\n" + steps.toString() + "    </Request>\n" +
-                "    <Response/>\n" +
+                "    <Request>\n" + requestSteps.toString() + "    </Request>\n" +
+                "    <Response>\n      <Step><Name>AM-Response-template</Name></Step>\n    </Response>\n" +
                 "  </PreFlow>\n" +
                 "  <HTTPProxyConnection><BasePath>/" + apiName.toLowerCase() + "</BasePath></HTTPProxyConnection>\n" +
                 "  <RouteRule name=\"default\"><TargetEndpoint>default</TargetEndpoint></RouteRule>\n" +
                 "</ProxyEndpoint>";
         Files.writeString(proxiesDir.resolve("default.xml"), proxyXml);
 
-        // D. Generate Target Endpoint (Using extracted Akana URL)
+        // D. Target Endpoint
         String targetXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
                 "<TargetEndpoint name=\"default\">\n" +
                 "  <HTTPTargetConnection>\n" +
@@ -116,7 +135,7 @@ public class ApigeeTransformer {
                 "</TargetEndpoint>";
         Files.writeString(targetsDir.resolve("default.xml"), targetXml);
 
-        // ZIP Logic
+        // Final ZIP
         File zipFile = new File(apiName + ".zip");
         try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
             Files.walk(apiproxy).filter(p -> !Files.isDirectory(p)).forEach(p -> {
