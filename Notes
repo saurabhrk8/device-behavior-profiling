@@ -14,15 +14,14 @@ public class ApigeeTransformer {
         String targetUrl = "";
         String wsdlContent = "";
         long maxWsdlSize = -1;
-        Set<String> identifiedPolicies = new LinkedHashSet<>();
+        Set<String> finalPolicies = new LinkedHashSet<>();
 
-        // 1. Process Zip: Extract Metadata and the largest WSDL
+        // 1. Unzip and Scan
         try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(binContent))) {
             ZipEntry entry;
             while ((entry = zis.getNextEntry()) != null) {
                 byte[] bytes = zis.readAllBytes();
                 String name = entry.getName().toLowerCase();
-
                 if (name.contains("objectdata.xml") || name.contains("object.xml")) {
                     objectXml = new String(bytes, StandardCharsets.UTF_8);
                 } else if (name.endsWith(".wsdl") && bytes.length > maxWsdlSize) {
@@ -32,69 +31,64 @@ public class ApigeeTransformer {
             }
         }
 
-        // 2. Extract API Name & Target URL
+        // 2. Extract Basic Info
         String apiName = extractValue(objectXml, "Name", "API_" + apiId);
-        targetUrl = extractTargetUrl(objectXml, wsdlContent);
 
-        // 3. TWO-PASS POLICY EXTRACTION
-        // Pass 1: Find Policy IDs attached to the API
-        Set<String> policyIds = new HashSet<>();
-        Matcher idMatcher = Pattern.compile("PolicyID\">(.*?)</", Pattern.CASE_INSENSITIVE).matcher(objectXml);
-        while (idMatcher.find()) policyIds.add(idMatcher.group(1).trim());
-
-        // Pass 2: Find the Names for these Policies elsewhere in the XML
-        for (String id : policyIds) {
-            // Look for blocks that define the policy name for this specific ID
-            Pattern p = Pattern.compile("<[^>]*?Policy[^>]*?>.*?<[^>]*?ID[^>]*?>" + id + "</.*?<[^>]*?Name[^>]*?>(.*?)</", Pattern.DOTALL);
-            Matcher m = p.matcher(objectXml);
-            if (m.find()) {
-                identifiedPolicies.add(m.group(1).trim());
-            }
+        // 3. INTELLIGENT POLICY DISCOVERY
+        // Step A: Find all Policy Names in 'PolicyAttachment' or 'Assertion' sections
+        Pattern p = Pattern.compile("<[^>]*?(?:Policy|Assertion)[^>]*?>.*?<[^>]*?Name[^>]*?>(.*?)</", Pattern.DOTALL);
+        Matcher m = p.matcher(objectXml);
+        while (m.find()) {
+            String candidate = m.group(1).trim();
+            if (isRealPolicy(candidate)) finalPolicies.add(candidate);
         }
 
-        // Fallback: If no IDs matched, look for "Assertion" names
-        if (identifiedPolicies.isEmpty()) {
-            Matcher assertMatcher = Pattern.compile("<[^>]*?Assertion[^>]*?>.*?<[^>]*?Name[^>]*?>(.*?)</", Pattern.DOTALL).matcher(objectXml);
-            while (assertMatcher.find()) {
-                String name = assertMatcher.group(1).trim();
-                if (!name.toLowerCase().contains("visibility")) identifiedPolicies.add(name);
-            }
+        // Step B: Look for 'Quota' or 'TPS' identifiers specifically
+        Matcher qm = Pattern.compile("(?:Quota|TPS)[^<]*?([\\w\\s\\-]{3,40})", Pattern.CASE_INSENSITIVE).matcher(objectXml);
+        while (qm.find()) {
+            String candidate = qm.group(0).trim();
+            if (isRealPolicy(candidate)) finalPolicies.add(candidate);
         }
 
-        // 4. Convert WSDL to OAS
-        String oasYaml = wsdlContent.isEmpty() ? "" : convertWsdlToOas(wsdlContent, apiName, targetUrl);
+        // 4. Target & OAS Logic
+        if (!wsdlContent.isEmpty()) {
+            targetUrl = extractRegex(wsdlContent, "soap:address\\s+location=\"(.*?)\"");
+            wsdlContent = convertWsdlToOas(wsdlContent, apiName, targetUrl);
+        }
+        if (targetUrl.isEmpty()) targetUrl = extractTargetUrl(objectXml);
 
-        return createApigeeZip(apiName, targetUrl, oasYaml, identifiedPolicies);
+        return createApigeeZip(apiName, targetUrl, wsdlContent, finalPolicies);
     }
 
-    private String extractTargetUrl(String xml, String wsdl) {
-        // Priority 1: SOAP Address in WSDL
-        String url = extractRegex(wsdl, "soap:address\\s+location=\"(.*?)\"");
-        if (!url.isEmpty()) return url;
+    private boolean isRealPolicy(String name) {
+        String n = name.toLowerCase();
+        // Exclude Akana infrastructure metadata
+        List<String> ignore = Arrays.asList("http", "visibility", "gateway", "uddi", "virtualhost", "local", "v1_");
+        for (String word : ignore) if (n.contains(word)) return false;
+        return name.length() > 3 && name.length() < 50;
+    }
 
-        // Priority 2: Akana Metadata useType="endPoint"
+    private String convertWsdlToOas(String wsdl, String name, String url) {
+        StringBuilder yaml = new StringBuilder("openapi: 3.0.0\ninfo:\n  title: " + name + "\n  version: 1.0.0\n");
+        yaml.append("servers:\n  - url: '").append(url.isEmpty() ? "http://backend" : url).append("'\npaths:\n");
+        Matcher m = Pattern.compile("operation\\s+name=\"(.*?)\"").matcher(wsdl);
+        Set<String> ops = new HashSet<>();
+        while (m.find()) ops.add(m.group(1));
+        for (String op : (ops.isEmpty() ? Collections.singleton("process") : ops)) {
+            yaml.append("  /").append(op).append(":\n    post:\n      summary: ").append(op).append("\n      responses:\n        '200':\n          description: OK\n");
+        }
+        return yaml.toString();
+    }
+
+    private String extractTargetUrl(String xml) {
         Pattern p = Pattern.compile("useType=\"endPoint\"[^>]*?>(.*?)</[\\w:]*?accessPoint>", Pattern.DOTALL);
         Matcher m = p.matcher(xml);
         return m.find() ? m.group(1).trim() : "https://mocktarget.apigee.net";
     }
 
-    private String convertWsdlToOas(String wsdl, String name, String url) {
-        StringBuilder sb = new StringBuilder("openapi: 3.0.0\ninfo:\n  title: " + name + "\n  version: 1.0.0\n");
-        sb.append("servers:\n  - url: '").append(url).append("'\npaths:\n");
-        
-        Matcher m = Pattern.compile("operation\\s+name=\"(.*?)\"").matcher(wsdl);
-        Set<String> ops = new HashSet<>();
-        while (m.find()) ops.add(m.group(1));
-        
-        for (String op : (ops.isEmpty() ? Collections.singleton("process") : ops)) {
-            sb.append("  /").append(op).append(":\n    post:\n      summary: ").append(op).append("\n      responses:\n        '200':\n          description: OK\n");
-        }
-        return sb.toString();
-    }
-
-    private String extractValue(String content, String tag, String def) {
+    private String extractValue(String xml, String tag, String def) {
         Pattern p = Pattern.compile("<(?:\\w+:)??" + tag + ">(.*?)</(?:\\w+:)??" + tag + ">", Pattern.DOTALL);
-        Matcher m = p.matcher(content);
+        Matcher m = p.matcher(xml);
         return m.find() ? m.group(1).trim() : def;
     }
 
@@ -105,23 +99,22 @@ public class ApigeeTransformer {
     }
 
     private File createApigeeZip(String apiName, String targetUrl, String oasYaml, Set<String> policies) throws IOException {
-        Path tempDir = Files.createTempDirectory("apigee_bundle_");
+        Path tempDir = Files.createTempDirectory("apigee_final_");
         Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
         Path polDir = Files.createDirectories(apiproxy.resolve("policies"));
         Path proxDir = Files.createDirectories(apiproxy.resolve("proxies"));
         Path targDir = Files.createDirectories(apiproxy.resolve("targets"));
         Path resDir = Files.createDirectories(apiproxy.resolve("resources/oas"));
 
-        StringBuilder polyManifest = new StringBuilder("<Policy>AM-Response-template</Policy>\n");
-        StringBuilder preFlowSteps = new StringBuilder();
+        StringBuilder polyList = new StringBuilder("<Policy>AM-Response-template</Policy>\n");
+        StringBuilder steps = new StringBuilder();
 
         for (String p : policies) {
             String clean = p.replaceAll("[^a-zA-Z0-9-_]", "_");
-            polyManifest.append("    <Policy>").append(clean).append("</Policy>\n");
-            preFlowSteps.append("      <Step><Name>").append(clean).append("</Name></Step>\n");
+            polyList.append("    <Policy>").append(clean).append("</Policy>\n");
+            steps.append("      <Step><Name>").append(clean).append("</Name></Step>\n");
 
-            // Intelligent Mapping: Mapping Akana names to Apigee Policy Types
-            String xml = clean.toLowerCase().contains("quota") ? 
+            String xml = clean.toLowerCase().contains("quota") ?
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Quota name=\""+clean+"\"><Allow count=\"100\"/><Interval>1</Interval><TimeUnit>second</TimeUnit></Quota>" :
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?><AssignMessage name=\""+clean+"\"><AssignTo createNew=\"false\" type=\"request\"/></AssignMessage>";
             Files.writeString(polDir.resolve(clean + ".xml"), xml);
@@ -133,10 +126,10 @@ public class ApigeeTransformer {
             "  <Set><Payload contentType=\"application/json\">{\"Greeting\": \"Jai Ganesh\", \"timestamp\": \"{system.time}\"}</Payload></Set>\n" +
             "</AssignMessage>");
 
-        // Component XMLs
+        // Component XMLs (default.xml)
         Files.writeString(proxDir.resolve("default.xml"), 
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ProxyEndpoint name=\"default\">\n" +
-            "  <PreFlow><Request>" + preFlowSteps.toString() + "</Request><Response><Step><Name>AM-Response-template</Name></Step></Response></PreFlow>\n" +
+            "  <PreFlow><Request>" + steps.toString() + "</Request><Response><Step><Name>AM-Response-template</Name></Step></Response></PreFlow>\n" +
             "  <HTTPProxyConnection><BasePath>/v1/" + apiName + "</BasePath></HTTPProxyConnection>\n" +
             "  <RouteRule name=\"default\"><TargetEndpoint>default</TargetEndpoint></RouteRule>\n</ProxyEndpoint>");
 
@@ -147,7 +140,7 @@ public class ApigeeTransformer {
         Files.writeString(apiproxy.resolve(apiName + ".xml"), 
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<APIProxy name=\"" + apiName + "\">\n" +
             "  <BasePaths>/v1/" + apiName + "</BasePaths>\n" +
-            "  <Policies>" + polyManifest.toString() + "</Policies>\n" +
+            "  <Policies>" + polyList.toString() + "</Policies>\n" +
             "  <ProxyEndpoints><ProxyEndpoint>default</ProxyEndpoint></ProxyEndpoints>\n" +
             "  <TargetEndpoints><TargetEndpoint>default</TargetEndpoint></TargetEndpoints>\n</APIProxy>");
 
