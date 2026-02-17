@@ -15,7 +15,7 @@ public class ApigeeTransformer {
         String wsdlContent = "";
         long maxWsdlSize = -1;
 
-        // 1. Extract Metadata from Akana ZIP
+        // 1. Extract Metadata and WSDL from Akana ZIP
         try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(binContent))) {
             ZipEntry entry;
             while ((entry = zis.getNextEntry()) != null) {
@@ -34,63 +34,36 @@ public class ApigeeTransformer {
         String apiName = extractValue(objectXml, "Name", "API_" + apiId).replaceAll("[^a-zA-Z0-9-]", "-");
         targetUrl = extractTargetUrl(objectXml, wsdlContent);
 
-        return createApigeeBundle(apiName, targetUrl);
+        // 3. Generate OAS if WSDL exists
+        String oasYaml = generateOasFromWsdl(wsdlContent, apiName, targetUrl);
+
+        return createApigeeBundle(apiName, targetUrl, oasYaml);
     }
 
-    private File createApigeeBundle(String apiName, String targetUrl) throws IOException {
+    private File createApigeeBundle(String apiName, String targetUrl, String oasYaml) throws IOException {
         Path tempDir = Files.createTempDirectory("apigee_bundle_");
         Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
         Path polDir = Files.createDirectories(apiproxy.resolve("policies"));
         Path proxDir = Files.createDirectories(apiproxy.resolve("proxies"));
         Path targDir = Files.createDirectories(apiproxy.resolve("targets"));
+        Path resDir = Files.createDirectories(apiproxy.resolve("resources/oas"));
 
-        // Define policy list for the manifest and PreFlow
-        List<String> policyNames = Arrays.asList(
-            "SA-SpikeArrest", "Q-EnforceQuota", "CORS-Headers", "AC-IPRestriction", "AM-Response-template"
-        );
+        // Define policy set based on Apigee Standard References
+        Map<String, String> policyMap = new LinkedHashMap<>();
 
-        // 1. Spike Arrest Policy [Traffic Management]
-        Files.writeString(polDir.resolve("SA-SpikeArrest.xml"), 
-            "<SpikeArrest name=\"SA-SpikeArrest\">\n" +
-            "    <DisplayName>SA-SpikeArrest</DisplayName>\n" +
-            "    <Rate>10ps</Rate>\n" +
-            "</SpikeArrest>");
-
-        // 2. Quota Policy [Traffic Management]
-        Files.writeString(polDir.resolve("Q-EnforceQuota.xml"), 
-            "<Quota name=\"Q-EnforceQuota\" type=\"calendar\">\n" +
-            "    <DisplayName>Q-EnforceQuota</DisplayName>\n" +
-            "    <Allow count=\"2000\"/>\n" +
-            "    <Interval>1</Interval>\n" +
-            "    <TimeUnit>month</TimeUnit>\n" +
-            "    <Distributed>true</Distributed>\n" +
-            "    <Synchronous>true</Synchronous>\n" +
-            "</Quota>");
-
-        // 3. CORS Policy [Mediation]
-        Files.writeString(polDir.resolve("CORS-Headers.xml"), 
-            "<CORS name=\"CORS-Headers\">\n" +
-            "    <DisplayName>CORS-Headers</DisplayName>\n" +
-            "    <AllowOrigins>*</AllowOrigins>\n" +
-            "    <AllowMethods>GET, PUT, POST, DELETE</AllowMethods>\n" +
-            "    <AllowHeaders>origin, x-requested-with, accept, content-type</AllowHeaders>\n" +
-            "</CORS>");
-
-        // 4. Access Control [Security]
-        Files.writeString(polDir.resolve("AC-IPRestriction.xml"), 
-            "<AccessControl name=\"AC-IPRestriction\">\n" +
-            "    <DisplayName>AC-IPRestriction</DisplayName>\n" +
-            "    <IPRules noRuleMatchAction=\"ALLOW\">\n" +
-            "        <MatchRule action=\"DENY\">\n" +
-            "            <SourceAddress mask=\"24\">192.168.1.0</SourceAddress>\n" +
-            "        </MatchRule>\n" +
-            "    </IPRules>\n" +
-            "</AccessControl>");
-
-        // 5. Response Template (Jai Ganesh)
-        Files.writeString(polDir.resolve("AM-Response-template.xml"), 
+        // Traffic Management & Security Policies
+        policyMap.put("SA-SpikeArrest", "<SpikeArrest name=\"SA-SpikeArrest\"><Rate>10ps</Rate></SpikeArrest>");
+        policyMap.put("Q-EnforceQuota", "<Quota name=\"Q-EnforceQuota\" type=\"calendar\"><Allow count=\"2000\"/><Interval>1</Interval><TimeUnit>month</TimeUnit></Quota>");
+        policyMap.put("AC-AccessControl", "<?xml version=\"1.0\" encoding=\"UTF-8\"?><AccessControl name=\"AC-AccessControl\"><IPRules noRuleMatchAction=\"ALLOW\"><MatchRule action=\"DENY\"><SourceAddress mask=\"32\">198.51.100.1</SourceAddress></MatchRule></IPRules></AccessControl>");
+        
+        // Mediation & Extension Policies
+        policyMap.put("CORS-Headers", "<CORS name=\"CORS-Headers\"><AllowOrigins>*</AllowOrigins><AllowMethods>GET, POST, PUT, DELETE</AllowMethods></CORS>");
+        policyMap.put("J2X-JSONToXML", "<JSONToXML name=\"J2X-JSONToXML\"><Source>request</Source><OutputVariable>request</OutputVariable></JSONToXML>");
+        policyMap.put("X2J-XMLToJSON", "<XMLToJSON name=\"X2J-XMLToJSON\"><Source>response</Source><OutputVariable>response</OutputVariable></XMLToJSON>");
+        
+        // Custom Jai Ganesh Response
+        policyMap.put("AM-Response-template", 
             "<AssignMessage name=\"AM-Response-template\">\n" +
-            "    <DisplayName>AM-Response-template</DisplayName>\n" +
             "    <Set>\n" +
             "        <Payload contentType=\"application/json\" variablePrefix=\"%\" variableSuffix=\"%\">\n" +
             "            {\"Greeting\": \"Jai Ganesh\", \"api\": \"" + apiName + "\", \"timestamp\": \"%system.time%\"}\n" +
@@ -99,16 +72,21 @@ public class ApigeeTransformer {
             "    <AssignTo createNew=\"false\" transport=\"http\" type=\"response\"/>\n" +
             "</AssignMessage>");
 
-        // Construct ProxyEndpoint with Policy Steps
-        StringBuilder steps = new StringBuilder();
-        for (String p : policyNames) {
-            if (!p.equals("AM-Response-template")) steps.append("            <Step><Name>").append(p).append("</Name></Step>\n");
+        // Write policy files
+        for (Map.Entry<String, String> entry : policyMap.entrySet()) {
+            Files.writeString(polDir.resolve(entry.getKey() + ".xml"), entry.getValue());
         }
+
+        // 4. Create ProxyEndpoint (default.xml)
+        StringBuilder preFlowSteps = new StringBuilder();
+        preFlowSteps.append("            <Step><Name>SA-SpikeArrest</Name></Step>\n");
+        preFlowSteps.append("            <Step><Name>Q-EnforceQuota</Name></Step>\n");
+        preFlowSteps.append("            <Step><Name>CORS-Headers</Name></Step>\n");
 
         Files.writeString(proxDir.resolve("default.xml"), 
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ProxyEndpoint name=\"default\">\n" +
             "    <PreFlow>\n" +
-            "        <Request>\n" + steps + "        </Request>\n" +
+            "        <Request>\n" + preFlowSteps + "        </Request>\n" +
             "        <Response>\n" +
             "            <Step><Name>AM-Response-template</Name></Step>\n" +
             "        </Response>\n" +
@@ -119,15 +97,17 @@ public class ApigeeTransformer {
             "    <RouteRule name=\"default\"><TargetEndpoint>default</TargetEndpoint></RouteRule>\n" +
             "</ProxyEndpoint>");
 
-        // Target Endpoint
+        // 5. Create TargetEndpoint (default.xml)
         Files.writeString(targDir.resolve("default.xml"), 
             "<TargetEndpoint name=\"default\">\n" +
             "    <HTTPTargetConnection><URL>" + targetUrl + "</URL></HTTPTargetConnection>\n" +
             "</TargetEndpoint>");
 
-        // APIProxy Manifest
+        // 6. Create API Proxy Manifest
         StringBuilder manifestPolicies = new StringBuilder();
-        for (String p : policyNames) manifestPolicies.append("        <Policy>").append(p).append("</Policy>\n");
+        for (String pName : policyMap.keySet()) {
+            manifestPolicies.append("        <Policy>").append(pName).append("</Policy>\n");
+        }
 
         Files.writeString(apiproxy.resolve(apiName + ".xml"), 
             "<APIProxy name=\"" + apiName + "\">\n" +
@@ -137,7 +117,12 @@ public class ApigeeTransformer {
             "    <TargetEndpoints><TargetEndpoint>default</TargetEndpoint></TargetEndpoints>\n" +
             "</APIProxy>");
 
-        // Final Zip Assembly
+        // 7. Store OAS file
+        if (!oasYaml.isEmpty()) {
+            Files.writeString(resDir.resolve("openapi.yaml"), oasYaml);
+        }
+
+        // 8. Zip the bundle for Apigee Upload
         File zipFile = new File(apiName + ".zip");
         try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
             Files.walk(apiproxy).filter(p -> !Files.isDirectory(p)).forEach(p -> {
@@ -159,6 +144,17 @@ public class ApigeeTransformer {
             url = m.find() ? m.group(1).trim() : "https://mocktarget.apigee.net";
         }
         return url;
+    }
+
+    private String generateOasFromWsdl(String wsdl, String name, String url) {
+        if (wsdl == null || wsdl.isEmpty()) return "";
+        StringBuilder yaml = new StringBuilder("openapi: 3.0.0\ninfo:\n  title: " + name + "\n  version: 1.0.0\n");
+        yaml.append("servers:\n  - url: '" + url + "'\npaths:\n");
+        Matcher m = Pattern.compile("operation\\s+name=\"(.*?)\"").matcher(wsdl);
+        while (m.find()) {
+            yaml.append("  /").append(m.group(1)).append(":\n    post:\n      responses:\n        '200':\n          description: OK\n");
+        }
+        return yaml.toString();
     }
 
     private String extractValue(String xml, String tag, String def) {
