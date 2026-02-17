@@ -1,29 +1,158 @@
-Extension Policies
+package com.migration;
 
-AssertCondition
-ExternalCallout
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.util.*;
+import java.util.regex.*;
+import java.util.zip.*;
 
-Mediation Policies
+public class ApigeeTransformer {
 
-CORS
-GraphQL
-HTTPModifier
-JSONtoXML
-OASValidation
-PublishMessage
-RaiseFault
-ReadPropertySet
-SOAPMessageValidation
-XMLtoJSON
+    public File transform(byte[] binContent, String apiId) throws Exception {
+        String objectXml = "";
+        String targetUrl = "";
+        String wsdlContent = "";
+        long maxWsdlSize = -1;
 
-Security Policies
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(binContent))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                byte[] bytes = zis.readAllBytes();
+                String name = entry.getName().toLowerCase();
+                if (name.contains("objectdata.xml")) {
+                    objectXml = new String(bytes, StandardCharsets.UTF_8);
+                } else if (name.endsWith(".wsdl") && bytes.length > maxWsdlSize) {
+                    maxWsdlSize = bytes.length;
+                    wsdlContent = new String(bytes, StandardCharsets.UTF_8);
+                }
+            }
+        }
 
-AccessControl
-HMAC
-DecodeJWT
-VerifyJWT
-VerifyIAM
+        String apiName = extractValue(objectXml, "Name", "API-" + apiId).replaceAll("[^a-zA-Z0-9-]", "-");
+        targetUrl = extractTargetUrl(objectXml, wsdlContent);
+        String oasYaml = generateOasFromWsdl(wsdlContent, apiName, targetUrl);
 
-Traffic Management
+        return createApigeeBundle(apiName, targetUrl, oasYaml);
+    }
 
-SpikeArrest
+    private File createApigeeBundle(String apiName, String targetUrl, String oasYaml) throws IOException {
+        Path tempDir = Files.createTempDirectory("apigee_bundle_");
+        Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
+        Path polDir = Files.createDirectories(apiproxy.resolve("policies"));
+        Path proxDir = Files.createDirectories(apiproxy.resolve("proxies"));
+        Path targDir = Files.createDirectories(apiproxy.resolve("targets"));
+        Path resDir = Files.createDirectories(apiproxy.resolve("resources/oas"));
+
+        Map<String, String> policyMap = new LinkedHashMap<>();
+
+        // --- 1. EXTENSION POLICIES ---
+        policyMap.put("AssertCondition-1", "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<AssertCondition name=\"AssertCondition-1\">\n    <DisplayName>Assert Condition 1</DisplayName>\n    <Condition>request.header.Content-Type == \"application/json\"</Condition>\n</AssertCondition>");
+        policyMap.put("ExternalCallout-1", "<ExternalCallout enabled=\"true\" continueOnError=\"false\" name=\"ExternalCallout-1\">\n  <DisplayName>External Callout 1</DisplayName>\n  <TimeoutMs>5000</TimeoutMs>\n  <GrpcConnection><Server name=\"external-target-server\"/></GrpcConnection>\n</ExternalCallout>");
+
+        // --- 2. MEDIATION POLICIES ---
+        policyMap.put("CORS-1", "<CORS name=\"CORS-1\">\n  <AllowOrigins>*</AllowOrigins>\n  <AllowMethods>GET, PUT, POST, DELETE</AllowMethods>\n  <AllowHeaders>origin, x-requested-with, accept, content-type</AllowHeaders>\n</CORS>");
+        policyMap.put("GraphQL-1", "<GraphQL name=\"GraphQL-1\">\n  <Source>request</Source>\n  <OperationType>query</OperationType>\n  <MaxDepth>10</MaxDepth>\n</GraphQL>");
+        policyMap.put("HTTPModifier-1", "<HTTPModifier name=\"HTTPModifier-1\">\n  <Add><Headers><Header name=\"X-Migrated\">true</Header></Headers></Add>\n  <AssignTo createNew=\"false\" transport=\"http\" type=\"request\"/>\n</HTTPModifier>");
+        policyMap.put("JSONtoXML-1", "<JSONToXML name=\"JSONtoXML-1\">\n    <Source>request</Source>\n    <Options><ObjectRootElementName>Root</ObjectRootElementName></Options>\n</JSONToXML>");
+        policyMap.put("OASValidation-1", "<OASValidation name=\"OASValidation-1\">\n    <OASResource>openapi.yaml</OASResource>\n</OASValidation>");
+        policyMap.put("PublishMessage-1", "<PublishMessage name=\"PublishMessage-1\">\n    <CloudPubSub><Topic>projects/my-project/topics/api-logs</Topic></CloudPubSub>\n</PublishMessage>");
+        policyMap.put("RaiseFault-1", "<RaiseFault name=\"RaiseFault-1\">\n    <FaultResponse><Set><StatusCode>500</StatusCode><Payload>Internal Server Error</Payload></Set></FaultResponse>\n</RaiseFault>");
+        policyMap.put("ReadPropertySet-1", "<ReadPropertySet name=\"ReadPropertySet-1\">\n  <Read><Name>my-props</Name><Key>key1</Key><AssignTo>var1</AssignTo></Read>\n</ReadPropertySet>");
+        policyMap.put("SOAPMessageValidation-1", "<MessageValidation name=\"SOAPMessageValidation-1\">\n    <SOAPMessage version=\"1.1\"/>\n    <Source>request</Source>\n</MessageValidation>");
+        policyMap.put("XMLtoJSON-1", "<XMLToJSON name=\"XMLtoJSON-1\">\n    <Source>response</Source>\n    <Options><RecognizeNumber>true</RecognizeNumber></Options>\n</XMLToJSON>");
+
+        // --- 3. SECURITY POLICIES ---
+        policyMap.put("AccessControl-1", "<AccessControl name=\"AccessControl-1\">\n    <IPRules noRuleMatchAction=\"ALLOW\">\n        <MatchRule action=\"DENY\"><SourceAddress mask=\"24\">192.168.1.0</SourceAddress></MatchRule>\n    </IPRules>\n</AccessControl>");
+        policyMap.put("HMAC-1", "<HMAC name=\"HMAC-1\"><Algorithm>SHA-256</Algorithm><SecretKey ref=\"private.key\"/></HMAC>");
+        policyMap.put("DecodeJWT-1", "<DecodeJWT name=\"DecodeJWT-1\"><Source>request.header.Authorization</Source></DecodeJWT>");
+        policyMap.put("VerifyJWT-1", "<VerifyJWT name=\"VerifyJWT-1\"><Algorithm>HS256</Algorithm><Source>request.header.Authorization</Source><SecretKey><Value ref=\"private.secret\"/></SecretKey></VerifyJWT>");
+        policyMap.put("VerifyIAM-1", "<VerifyIAM name=\"VerifyIAM-1\"><CredentialSource>flow_variable_name</CredentialSource></VerifyIAM>");
+
+        // --- 4. TRAFFIC MANAGEMENT ---
+        policyMap.put("SpikeArrest-1", "<SpikeArrest name=\"SpikeArrest-1\"><Rate>10ps</Rate></SpikeArrest>");
+
+        // --- 5. JAI GANESH RESPONSE ---
+        policyMap.put("AM-Response-template", "<AssignMessage name=\"AM-Response-template\">\n<Set><Payload contentType=\"application/json\" variablePrefix=\"%\" variableSuffix=\"%\">{\"Greeting\": \"Jai Ganesh\", \"api\": \"" + apiName + "\", \"timestamp\": \"%system.time%\"}</Payload></Set>\n</AssignMessage>");
+
+        // Write all policies to the folder
+        for (Map.Entry<String, String> entry : policyMap.entrySet()) {
+            Files.writeString(polDir.resolve(entry.getKey() + ".xml"), entry.getValue());
+        }
+
+        // --- PROXY ENDPOINT ---
+        Files.writeString(proxDir.resolve("default.xml"), 
+            "<ProxyEndpoint name=\"default\">\n" +
+            "    <PreFlow><Request>\n" +
+            "        <Step><Name>SpikeArrest-1</Name></Step>\n" +
+            "        <Step><Name>CORS-1</Name></Step>\n" +
+            "    </Request><Response>\n" +
+            "        <Step><Name>AM-Response-template</Name></Step>\n" +
+            "    </Response></PreFlow>\n" +
+            "    <HTTPProxyConnection><BasePath>/v1/" + apiName.toLowerCase() + "</BasePath></HTTPProxyConnection>\n" +
+            "    <RouteRule name=\"default\"><TargetEndpoint>default</TargetEndpoint></RouteRule>\n" +
+            "</ProxyEndpoint>");
+
+        // --- TARGET ENDPOINT ---
+        Files.writeString(targDir.resolve("default.xml"), 
+            "<TargetEndpoint name=\"default\">\n" +
+            "    <HTTPTargetConnection><URL>" + targetUrl + "</URL></HTTPTargetConnection>\n" +
+            "</TargetEndpoint>");
+
+        // --- MANIFEST (Registration of all 18 policies) ---
+        StringBuilder manifestPolicies = new StringBuilder();
+        for (String pName : policyMap.keySet()) {
+            manifestPolicies.append("        <Policy>").append(pName).append("</Policy>\n");
+        }
+
+        Files.writeString(apiproxy.resolve(apiName + ".xml"), 
+            "<APIProxy name=\"" + apiName + "\">\n" +
+            "    <BasePaths>/v1/" + apiName.toLowerCase() + "</BasePaths>\n" +
+            "    <Policies>\n" + manifestPolicies + "    </Policies>\n" +
+            "    <ProxyEndpoints><ProxyEndpoint>default</ProxyEndpoint></ProxyEndpoints>\n" +
+            "    <TargetEndpoints><TargetEndpoint>default</TargetEndpoint></TargetEndpoints>\n" +
+            "</APIProxy>");
+
+        if (!oasYaml.isEmpty()) Files.writeString(resDir.resolve("openapi.yaml"), oasYaml);
+
+        // ZIP Assembly
+        File zipFile = new File(apiName + ".zip");
+        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
+            Files.walk(apiproxy).filter(p -> !Files.isDirectory(p)).forEach(p -> {
+                try {
+                    zos.putNextEntry(new ZipEntry(tempDir.relativize(p).toString().replace("\\", "/")));
+                    Files.copy(p, zos);
+                    zos.closeEntry();
+                } catch (IOException e) { }
+            });
+        }
+        return zipFile;
+    }
+
+    private String extractTargetUrl(String xml, String wsdl) {
+        String url = "";
+        Matcher m = Pattern.compile("soap:address\\s+location=\"(.*?)\"", Pattern.CASE_INSENSITIVE).matcher(wsdl);
+        if (m.find()) url = m.group(1).trim();
+        if (url.isEmpty()) {
+            Matcher m2 = Pattern.compile("useType=\"endPoint\"[^>]*?>(.*?)</", Pattern.DOTALL).matcher(xml);
+            url = m2.find() ? m2.group(1).trim() : "https://mocktarget.apigee.net";
+        }
+        return url;
+    }
+
+    private String generateOasFromWsdl(String wsdl, String name, String url) {
+        if (wsdl.isEmpty()) return "";
+        StringBuilder yaml = new StringBuilder("openapi: 3.0.0\ninfo:\n  title: " + name + "\n  version: 1.0.0\npaths:\n");
+        Matcher m = Pattern.compile("operation\\s+name=\"(.*?)\"").matcher(wsdl);
+        while (m.find()) {
+            yaml.append("  /").append(m.group(1)).append(":\n    post:\n      responses:\n        '200':\n          description: OK\n");
+        }
+        return yaml.toString();
+    }
+
+    private String extractValue(String xml, String tag, String def) {
+        Pattern p = Pattern.compile("<(?:\\w+:)??" + tag + ">(.*?)</", Pattern.DOTALL);
+        Matcher m = p.matcher(xml);
+        return m.find() ? m.group(1).trim() : def;
+    }
+}
