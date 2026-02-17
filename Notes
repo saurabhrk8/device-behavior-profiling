@@ -135,3 +135,29 @@ public class ApigeeTransformer {
         return m.find() ? m.group(1).trim() : def;
     }
 }
+
+
+////////////////
+
+package com.migration;
+
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+
+public class MigratorApp {
+    public static void main(String[] args) {
+        try {
+            ApigeeTransformer transformer = new ApigeeTransformer();
+            String apiId = "12345";
+            byte[] zipBytes = Files.readAllBytes(Paths.get("akana_export.zip"));
+
+            // FIX: Use transform(zipBytes, apiId) to match the new 2-argument signature
+            File apigeeBundle = transformer.transform(zipBytes, apiId);
+
+            System.out.println("Full 18-Policy Bundle created at: " + apigeeBundle.getAbsolutePath());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
