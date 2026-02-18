@@ -12,6 +12,8 @@ public class ApigeeTransformer {
     public File transform(byte[] binContent, String apiId) throws Exception {
         String objectXml = "";
         String targetUrl = "";
+        String wsdlContent = "";
+        long maxWsdlSize = -1;
 
         try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(binContent))) {
             ZipEntry entry;
@@ -20,80 +22,85 @@ public class ApigeeTransformer {
                 String name = entry.getName().toLowerCase();
                 if (name.contains("objectdata.xml")) {
                     objectXml = new String(bytes, StandardCharsets.UTF_8);
+                } else if (name.endsWith(".wsdl") && bytes.length > maxWsdlSize) {
+                    maxWsdlSize = bytes.length;
+                    wsdlContent = new String(bytes, StandardCharsets.UTF_8);
                 }
             }
         }
 
         String apiName = extractValue(objectXml, "Name", "API-" + apiId).replaceAll("[^a-zA-Z0-9-]", "-");
-        // Default target if extraction fails to ensure a valid proxy
-        targetUrl = "https://mocktarget.apigee.net"; 
+        targetUrl = extractTargetUrl(objectXml, wsdlContent);
+        String oasYaml = generateOasFromWsdl(wsdlContent, apiName, targetUrl);
 
-        return createApigeeBundle(apiName, targetUrl);
+        return createApigeeBundle(apiName, targetUrl, oasYaml);
     }
 
-    private File createApigeeBundle(String apiName, String targetUrl) throws IOException {
-        Path tempDir = Files.createTempDirectory("apigee_baseline_");
+    private File createApigeeBundle(String apiName, String targetUrl, String oasYaml) throws IOException {
+        Path tempDir = Files.createTempDirectory("apigee_base_bundle_");
         Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
         Path polDir = Files.createDirectories(apiproxy.resolve("policies"));
         Path proxDir = Files.createDirectories(apiproxy.resolve("proxies"));
         Path targDir = Files.createDirectories(apiproxy.resolve("targets"));
+        Path resDir = Files.createDirectories(apiproxy.resolve("resources/oas"));
 
-        // Only the 2 most basic, universal policies
+        // Only Standard Policies allowed in Base Environment
         Map<String, String> policyMap = new LinkedHashMap<>();
 
-        // 1. CORS (Universal)
-        policyMap.put("CORS-1", "<CORS name=\"CORS-1\"><AllowOrigins>*</AllowOrigins><AllowMethods>GET, POST, OPTIONS</AllowMethods></CORS>");
+        // 1. Traffic Management
+        policyMap.put("SpikeArrest-1", "<SpikeArrest name=\"SpikeArrest-1\"><Rate>10ps</Rate></SpikeArrest>");
         
-        // 2. Response Template (AssignMessage is the most 'standard' policy in existence)
-        policyMap.put("AM-Response-template", 
-            "<AssignMessage name=\"AM-Response-template\">\n" +
-            "    <Set>\n" +
-            "        <Payload contentType=\"application/json\">{\"Greeting\": \"Jai Ganesh\", \"status\": \"Success\"}</Payload>\n" +
-            "    </Set>\n" +
-            "</AssignMessage>");
+        // 2. Security (Standard)
+        policyMap.put("AccessControl-1", "<AccessControl name=\"AccessControl-1\"><IPRules noRuleMatchAction=\"ALLOW\"><MatchRule action=\"DENY\"><SourceAddress mask=\"24\">192.168.1.0</SourceAddress></MatchRule></IPRules></AccessControl>");
+        policyMap.put("DecodeJWT-1", "<DecodeJWT name=\"DecodeJWT-1\"><Source>request.header.Authorization</Source></DecodeJWT>");
+        policyMap.put("VerifyJWT-1", "<VerifyJWT name=\"VerifyJWT-1\"><Algorithm>HS256</Algorithm><Source>request.header.Authorization</Source><SecretKey><Value ref=\"private.secret\"/></SecretKey></VerifyJWT>");
 
+        // 3. Mediation (Standard)
+        policyMap.put("CORS-1", "<CORS name=\"CORS-1\"><AllowOrigins>*</AllowOrigins><AllowMethods>GET, PUT, POST, DELETE</AllowMethods></CORS>");
+        policyMap.put("JSONtoXML-1", "<JSONToXML name=\"JSONtoXML-1\"><Source>request</Source><Options><ObjectRootElementName>Root</ObjectRootElementName></Options></JSONToXML>");
+        policyMap.put("XMLtoJSON-1", "<XMLToJSON name=\"XMLtoJSON-1\"><Source>response</Source><Options><RecognizeNumber>true</RecognizeNumber></Options></XMLToJSON>");
+        policyMap.put("HTTPModifier-1", "<HTTPModifier name=\"HTTPModifier-1\"><Add><Headers><Header name=\"X-Migrated\">true</Header></Headers></Add><AssignTo createNew=\"false\" transport=\"http\" type=\"request\"/></HTTPModifier>");
+        policyMap.put("ReadPropertySet-1", "<ReadPropertySet name=\"ReadPropertySet-1\"><Read><Name>my-props</Name><Key>k1</Key><AssignTo>var1</AssignTo></Read></ReadPropertySet>");
+        policyMap.put("SOAPMessageValidation-1", "<MessageValidation name=\"SOAPMessageValidation-1\"><SOAPMessage version=\"1.1\"/><Source>request</Source></MessageValidation>");
+        
+        // 4. Flow Control & Messages
+        policyMap.put("RaiseFault-1", "<RaiseFault name=\"RaiseFault-1\"><FaultResponse><Set><StatusCode>500</StatusCode></Set></FaultResponse></RaiseFault>");
+        policyMap.put("AM-Response-template", "<AssignMessage name=\"AM-Response-template\"><Set><Payload contentType=\"application/json\" variablePrefix=\"%\" variableSuffix=\"%\">{\"Greeting\": \"Jai Ganesh\", \"api\": \"" + apiName + "\", \"timestamp\": \"%system.time%\"}</Payload></Set></AssignMessage>");
+
+        // Write policy files
         for (Map.Entry<String, String> entry : policyMap.entrySet()) {
             Files.writeString(polDir.resolve(entry.getKey() + ".xml"), entry.getValue());
         }
 
-        // --- Build ProxyEndpoint ---
-        String proxyContent = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-                "<ProxyEndpoint name=\"default\">\n" +
-                "    <PreFlow>\n" +
-                "        <Request>\n" +
-                "            <Step><Name>CORS-1</Name></Step>\n" +
-                "        </Request>\n" +
-                "        <Response>\n" +
-                "            <Step><Name>AM-Response-template</Name></Step>\n" +
-                "        </Response>\n" +
-                "    </PreFlow>\n" +
-                "    <HTTPProxyConnection>\n" +
-                "        <BasePath>/v1/" + apiName.toLowerCase() + "</BasePath>\n" +
-                "    </HTTPProxyConnection>\n" +
-                "    <RouteRule name=\"default\">\n" +
-                "        <TargetEndpoint>default</TargetEndpoint>\n" +
-                "    </RouteRule>\n" +
-                "</ProxyEndpoint>";
-        Files.writeString(proxDir.resolve("default.xml"), proxyContent);
+        // --- Build PreFlow (Filtered for Base tier success) ---
+        StringBuilder reqSteps = new StringBuilder();
+        // Removed AssertCondition-1 and ExternalCallout-1 from this list
+        List<String> activeSteps = Arrays.asList(
+            "SpikeArrest-1", 
+            "AccessControl-1", 
+            "CORS-1", 
+            "JSONtoXML-1", 
+            "HTTPModifier-1", 
+            "SOAPMessageValidation-1"
+        );
+        
+        for (String stepName : activeSteps) {
+            reqSteps.append("            <Step><Name>").append(stepName).append("</Name></Step>\n");
+        }
 
-        // --- Build TargetEndpoint ---
-        Files.writeString(targDir.resolve("default.xml"), 
-            "<TargetEndpoint name=\"default\">\n" +
-            "    <HTTPTargetConnection><URL>" + targetUrl + "</URL></HTTPTargetConnection>\n" +
-            "</TargetEndpoint>");
+        Files.writeString(proxDir.resolve("default.xml"), 
+            "<ProxyEndpoint name=\"default\">\n<PreFlow><Request>\n" + reqSteps + "</Request>\n" +
+            "<Response><Step><Name>XMLtoJSON-1</Name></Step><Step><Name>AM-Response-template</Name></Step></Response></PreFlow>\n" +
+            "<HTTPProxyConnection><BasePath>/v1/" + apiName.toLowerCase() + "</BasePath></HTTPProxyConnection><RouteRule name=\"default\"><TargetEndpoint>default</TargetEndpoint></RouteRule></ProxyEndpoint>");
 
-        // --- Build Manifest ---
-        Files.writeString(apiproxy.resolve(apiName + ".xml"), 
-            "<APIProxy name=\"" + apiName + "\">\n" +
-            "    <Policies>\n" +
-            "        <Policy>CORS-1</Policy>\n" +
-            "        <Policy>AM-Response-template</Policy>\n" +
-            "    </Policies>\n" +
-            "    <ProxyEndpoints><ProxyEndpoint>default</ProxyEndpoint></ProxyEndpoints>\n" +
-            "    <TargetEndpoints><TargetEndpoint>default</TargetEndpoint></TargetEndpoints>\n" +
-            "</APIProxy>");
+        Files.writeString(targDir.resolve("default.xml"), "<TargetEndpoint name=\"default\"><HTTPTargetConnection><URL>" + targetUrl + "</URL></HTTPTargetConnection></TargetEndpoint>");
 
-        // ZIP the bundle
+        StringBuilder manifest = new StringBuilder();
+        for (String p : policyMap.keySet()) manifest.append("        <Policy>").append(p).append("</Policy>\n");
+        Files.writeString(apiproxy.resolve(apiName + ".xml"), "<APIProxy name=\"" + apiName + "\"><Policies>" + manifest + "</Policies><ProxyEndpoints><ProxyEndpoint>default</ProxyEndpoint></ProxyEndpoints><TargetEndpoints><TargetEndpoint>default</TargetEndpoint></TargetEndpoints></APIProxy>");
+
+        if (!oasYaml.isEmpty()) Files.writeString(resDir.resolve("openapi.yaml"), oasYaml);
+
         File zipFile = new File(apiName + ".zip");
         try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
             Files.walk(apiproxy).filter(p -> !Files.isDirectory(p)).forEach(p -> {
@@ -105,6 +112,27 @@ public class ApigeeTransformer {
             });
         }
         return zipFile;
+    }
+
+    private String extractTargetUrl(String xml, String wsdl) {
+        String url = "";
+        Matcher m = Pattern.compile("soap:address\\s+location=\"(.*?)\"", Pattern.CASE_INSENSITIVE).matcher(wsdl);
+        if (m.find()) url = m.group(1).trim();
+        if (url.isEmpty()) {
+            Matcher m2 = Pattern.compile("useType=\"endPoint\"[^>]*?>(.*?)</", Pattern.DOTALL).matcher(xml);
+            url = m2.find() ? m2.group(1).trim() : "https://mocktarget.apigee.net";
+        }
+        return url;
+    }
+
+    private String generateOasFromWsdl(String wsdl, String name, String url) {
+        if (wsdl == null || wsdl.isEmpty()) return "";
+        StringBuilder yaml = new StringBuilder("openapi: 3.0.0\ninfo:\n  title: " + name + "\n  version: 1.0.0\npaths:\n");
+        Matcher m = Pattern.compile("operation\\s+name=\"(.*?)\"").matcher(wsdl);
+        while (m.find()) {
+            yaml.append("  /").append(m.group(1)).append(":\n    post:\n      responses:\n        '200':\n          description: OK\n");
+        }
+        return yaml.toString();
     }
 
     private String extractValue(String xml, String tag, String def) {
