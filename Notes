@@ -25,15 +25,43 @@ public class ApigeeTransformer {
     }
 
     private File createApigeeBundle(String apiName) throws IOException {
-        Path tempDir = Files.createTempDirectory("apigee_atomic_");
+        Path tempDir = Files.createTempDirectory("apigee_phase1_");
         Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
-        Files.createDirectories(apiproxy.resolve("policies")); // Keep folder empty
+        Path polDir = Files.createDirectories(apiproxy.resolve("policies"));
         Path proxDir = Files.createDirectories(apiproxy.resolve("proxies"));
         Path targDir = Files.createDirectories(apiproxy.resolve("targets"));
 
-        // 1. Minimum ProxyEndpoint - No Policies, No Steps
+        // Step 1: Add only the two most universal policies
+        Map<String, String> policyMap = new LinkedHashMap<>();
+
+        policyMap.put("CORS-1", 
+            "<CORS name=\"CORS-1\">\n" +
+            "    <AllowOrigins>*</AllowOrigins>\n" +
+            "    <AllowMethods>GET, POST, OPTIONS</AllowMethods>\n" +
+            "</CORS>");
+        
+        policyMap.put("AM-Response-template", 
+            "<AssignMessage name=\"AM-Response-template\">\n" +
+            "    <Set>\n" +
+            "        <Payload contentType=\"application/json\">{\"Greeting\": \"Jai Ganesh\", \"api\": \"" + apiName + "\"}</Payload>\n" +
+            "    </Set>\n" +
+            "</AssignMessage>");
+
+        for (Map.Entry<String, String> entry : policyMap.entrySet()) {
+            Files.writeString(polDir.resolve(entry.getKey() + ".xml"), entry.getValue());
+        }
+
+        // --- Build ProxyEndpoint with Steps ---
         String proxyContent = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
                 "<ProxyEndpoint name=\"default\">\n" +
+                "    <PreFlow>\n" +
+                "        <Request>\n" +
+                "            <Step><Name>CORS-1</Name></Step>\n" +
+                "        </Request>\n" +
+                "        <Response>\n" +
+                "            <Step><Name>AM-Response-template</Name></Step>\n" +
+                "        </Response>\n" +
+                "    </PreFlow>\n" +
                 "    <HTTPProxyConnection>\n" +
                 "        <BasePath>/v1/" + apiName.toLowerCase() + "</BasePath>\n" +
                 "    </HTTPProxyConnection>\n" +
@@ -43,7 +71,6 @@ public class ApigeeTransformer {
                 "</ProxyEndpoint>";
         Files.writeString(proxDir.resolve("default.xml"), proxyContent);
 
-        // 2. Minimum TargetEndpoint
         Files.writeString(targDir.resolve("default.xml"), 
             "<TargetEndpoint name=\"default\">\n" +
             "    <HTTPTargetConnection>\n" +
@@ -51,9 +78,13 @@ public class ApigeeTransformer {
             "    </HTTPTargetConnection>\n" +
             "</TargetEndpoint>");
 
-        // 3. Minimum Manifest
+        // --- Build Manifest with Policy Registration ---
         Files.writeString(apiproxy.resolve(apiName + ".xml"), 
             "<APIProxy name=\"" + apiName + "\">\n" +
+            "    <Policies>\n" +
+            "        <Policy>CORS-1</Policy>\n" +
+            "        <Policy>AM-Response-template</Policy>\n" +
+            "    </Policies>\n" +
             "    <ProxyEndpoints><ProxyEndpoint>default</ProxyEndpoint></ProxyEndpoints>\n" +
             "    <TargetEndpoints><TargetEndpoint>default</TargetEndpoint></TargetEndpoints>\n" +
             "</APIProxy>");
