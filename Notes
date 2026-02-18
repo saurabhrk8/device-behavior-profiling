@@ -37,7 +37,7 @@ public class ApigeeTransformer {
     }
 
     private File createApigeeBundle(String apiName, String targetUrl, String oasYaml) throws IOException {
-        Path tempDir = Files.createTempDirectory("apigee_final_bundle_");
+        Path tempDir = Files.createTempDirectory("apigee_base_bundle_");
         Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
         Path polDir = Files.createDirectories(apiproxy.resolve("policies"));
         Path proxDir = Files.createDirectories(apiproxy.resolve("proxies"));
@@ -46,58 +46,32 @@ public class ApigeeTransformer {
 
         Map<String, String> policyMap = new LinkedHashMap<>();
 
-        // --- 1. EXTENSION POLICIES ---
-        policyMap.put("AssertCondition-1", "<AssertCondition name=\"AssertCondition-1\"><DisplayName>Assert Condition 1</DisplayName><Condition>request.header.Content-Type == \"application/json\"</Condition></AssertCondition>");
-        policyMap.put("ExternalCallout-1", "<ExternalCallout name=\"ExternalCallout-1\"><DisplayName>External Callout 1</DisplayName><TimeoutMs>5000</TimeoutMs><GrpcConnection><Server name=\"external-target-server\"/></GrpcConnection></ExternalCallout>");
-
-        // --- 2. MEDIATION POLICIES ---
-        policyMap.put("CORS-1", "<CORS name=\"CORS-1\"><AllowOrigins>*</AllowOrigins><AllowMethods>GET, PUT, POST, DELETE</AllowMethods></CORS>");
-        policyMap.put("GraphQL-1", "<GraphQL name=\"GraphQL-1\"><Action>parse</Action><Source>request</Source><OperationType>query</OperationType></GraphQL>");
-        policyMap.put("HTTPModifier-1", "<HTTPModifier name=\"HTTPModifier-1\"><Add><Headers><Header name=\"X-Migrated\">true</Header></Headers></Add><AssignTo createNew=\"false\" transport=\"http\" type=\"request\"/></HTTPModifier>");
-        
-        // FIX: Added valid Options block
-        policyMap.put("JSONtoXML-1", "<JSONToXML name=\"JSONtoXML-1\"><Source>request</Source><Options><ObjectRootElementName>Root</ObjectRootElementName><ArrayRootElementName>Array</ArrayRootElementName></Options></JSONToXML>");
-        
-        policyMap.put("OASValidation-1", "<OASValidation name=\"OASValidation-1\"><OASResource>oas://openapi.yaml</OASResource></OASValidation>");
-        policyMap.put("PublishMessage-1", "<PublishMessage name=\"PublishMessage-1\"><Source>request</Source><CloudPubSub><Topic>projects/p1/topics/t1</Topic></CloudPubSub></PublishMessage>");
-        policyMap.put("RaiseFault-1", "<RaiseFault name=\"RaiseFault-1\"><FaultResponse><Set><StatusCode>500</StatusCode></Set></FaultResponse></RaiseFault>");
-        policyMap.put("ReadPropertySet-1", "<ReadPropertySet name=\"ReadPropertySet-1\"><Read><Name>my-props</Name><Key>k1</Key><AssignTo>var1</AssignTo></Read></ReadPropertySet>");
-        policyMap.put("SOAPMessageValidation-1", "<MessageValidation name=\"SOAPMessageValidation-1\"><SOAPMessage version=\"1.1\"/><Source>request</Source></MessageValidation>");
-        
-        // FIX: Added mandatory Options block and removed format to avoid "not both" error
-        policyMap.put("XMLtoJSON-1", "<XMLToJSON name=\"XMLtoJSON-1\">\n" +
-                "    <Source>response</Source>\n" +
-                "    <Options>\n" +
-                "        <RecognizeNumber>true</RecognizeNumber>\n" +
-                "        <RecognizeBoolean>true</RecognizeBoolean>\n" +
-                "        <RecognizeNull>true</RecognizeNull>\n" +
-                "    </Options>\n" +
-                "</XMLToJSON>");
-
-        // --- 3. SECURITY POLICIES ---
+        // --- BASE TIER COMPATIBLE POLICIES ---
+        policyMap.put("SpikeArrest-1", "<SpikeArrest name=\"SpikeArrest-1\"><Rate>10ps</Rate></SpikeArrest>");
         policyMap.put("AccessControl-1", "<AccessControl name=\"AccessControl-1\"><IPRules noRuleMatchAction=\"ALLOW\"><MatchRule action=\"DENY\"><SourceAddress mask=\"24\">192.168.1.0</SourceAddress></MatchRule></IPRules></AccessControl>");
-        policyMap.put("HMAC-1", "<HMAC name=\"HMAC-1\"><Algorithm>SHA-256</Algorithm><Message>request.content</Message><SecretKey ref=\"private.key\"/></HMAC>");
+        policyMap.put("CORS-1", "<CORS name=\"CORS-1\"><AllowOrigins>*</AllowOrigins><AllowMethods>GET, PUT, POST, DELETE</AllowMethods></CORS>");
+        policyMap.put("JSONtoXML-1", "<JSONToXML name=\"JSONtoXML-1\"><Source>request</Source><Options><ObjectRootElementName>Root</ObjectRootElementName></Options></JSONToXML>");
+        policyMap.put("XMLtoJSON-1", "<XMLToJSON name=\"XMLtoJSON-1\"><Source>response</Source><Options><RecognizeNumber>true</RecognizeNumber></Options></XMLToJSON>");
+        policyMap.put("HTTPModifier-1", "<HTTPModifier name=\"HTTPModifier-1\"><Add><Headers><Header name=\"X-Migrated\">true</Header></Headers></Add><AssignTo createNew=\"false\" transport=\"http\" type=\"request\"/></HTTPModifier>");
+        policyMap.put("AssertCondition-1", "<AssertCondition name=\"AssertCondition-1\"><Condition>request.header.Content-Type == \"application/json\"</Condition></AssertCondition>");
+        policyMap.put("RaiseFault-1", "<RaiseFault name=\"RaiseFault-1\"><FaultResponse><Set><StatusCode>500</StatusCode></Set></FaultResponse></RaiseFault>");
+        policyMap.put("ReadPropertySet-1", "<ReadPropertySet name=\"ReadPropertySet-1\"><Read><Name>props</Name><Key>k1</Key><AssignTo>var1</AssignTo></Read></ReadPropertySet>");
+        policyMap.put("SOAPMessageValidation-1", "<MessageValidation name=\"SOAPMessageValidation-1\"><SOAPMessage version=\"1.1\"/><Source>request</Source></MessageValidation>");
         policyMap.put("DecodeJWT-1", "<DecodeJWT name=\"DecodeJWT-1\"><Source>request.header.Authorization</Source></DecodeJWT>");
         policyMap.put("VerifyJWT-1", "<VerifyJWT name=\"VerifyJWT-1\"><Algorithm>HS256</Algorithm><Source>request.header.Authorization</Source><SecretKey><Value ref=\"private.secret\"/></SecretKey></VerifyJWT>");
-        policyMap.put("VerifyIAM-1", "<VerifyIAM name=\"VerifyIAM-1\"><CredentialSource>request.header.X-IAM-Token</CredentialSource></VerifyIAM>");
-
-        // --- 4. TRAFFIC MANAGEMENT ---
-        policyMap.put("SpikeArrest-1", "<SpikeArrest name=\"SpikeArrest-1\"><Rate>10ps</Rate></SpikeArrest>");
-
-        // --- 5. RESPONSE TEMPLATE ---
         policyMap.put("AM-Response-template", "<AssignMessage name=\"AM-Response-template\"><Set><Payload contentType=\"application/json\" variablePrefix=\"%\" variableSuffix=\"%\">{\"Greeting\": \"Jai Ganesh\", \"api\": \"" + apiName + "\", \"timestamp\": \"%system.time%\"}</Payload></Set></AssignMessage>");
 
-        // Write policy files
+        // --- Write Policy Files ---
         for (Map.Entry<String, String> entry : policyMap.entrySet()) {
             Files.writeString(polDir.resolve(entry.getKey() + ".xml"), entry.getValue());
         }
 
-        // --- Build PreFlow with all Steps ---
+        // --- Build PreFlow (Only Standard Policies) ---
         StringBuilder reqSteps = new StringBuilder();
-        for (String p : policyMap.keySet()) {
-            if (!p.equals("AM-Response-template") && !p.equals("RaiseFault-1") && !p.equals("XMLtoJSON-1")) {
-                reqSteps.append("            <Step><Name>").append(p).append("</Name></Step>\n");
-            }
+        List<String> activeSteps = Arrays.asList("SpikeArrest-1", "AccessControl-1", "CORS-1", "VerifyJWT-1", "JSONtoXML-1", "HTTPModifier-1", "AssertCondition-1");
+        
+        for (String stepName : activeSteps) {
+            reqSteps.append("            <Step><Name>").append(stepName).append("</Name></Step>\n");
         }
 
         Files.writeString(proxDir.resolve("default.xml"), 
