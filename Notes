@@ -11,62 +11,29 @@ public class ApigeeTransformer {
 
     public File transform(byte[] binContent, String apiId) throws Exception {
         String objectXml = "";
-        String targetUrl = "";
-
         try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(binContent))) {
             ZipEntry entry;
             while ((entry = zis.getNextEntry()) != null) {
-                byte[] bytes = zis.readAllBytes();
-                String name = entry.getName().toLowerCase();
-                if (name.contains("objectdata.xml")) {
-                    objectXml = new String(bytes, StandardCharsets.UTF_8);
+                if (entry.getName().toLowerCase().contains("objectdata.xml")) {
+                    objectXml = new String(zis.readAllBytes(), StandardCharsets.UTF_8);
                 }
             }
         }
 
         String apiName = extractValue(objectXml, "Name", "API-" + apiId).replaceAll("[^a-zA-Z0-9-]", "-");
-        // Default target if extraction fails to ensure a valid proxy
-        targetUrl = "https://mocktarget.apigee.net"; 
-
-        return createApigeeBundle(apiName, targetUrl);
+        return createApigeeBundle(apiName);
     }
 
-    private File createApigeeBundle(String apiName, String targetUrl) throws IOException {
-        Path tempDir = Files.createTempDirectory("apigee_baseline_");
+    private File createApigeeBundle(String apiName) throws IOException {
+        Path tempDir = Files.createTempDirectory("apigee_atomic_");
         Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
-        Path polDir = Files.createDirectories(apiproxy.resolve("policies"));
+        Files.createDirectories(apiproxy.resolve("policies")); // Keep folder empty
         Path proxDir = Files.createDirectories(apiproxy.resolve("proxies"));
         Path targDir = Files.createDirectories(apiproxy.resolve("targets"));
 
-        // Only the 2 most basic, universal policies
-        Map<String, String> policyMap = new LinkedHashMap<>();
-
-        // 1. CORS (Universal)
-        policyMap.put("CORS-1", "<CORS name=\"CORS-1\"><AllowOrigins>*</AllowOrigins><AllowMethods>GET, POST, OPTIONS</AllowMethods></CORS>");
-        
-        // 2. Response Template (AssignMessage is the most 'standard' policy in existence)
-        policyMap.put("AM-Response-template", 
-            "<AssignMessage name=\"AM-Response-template\">\n" +
-            "    <Set>\n" +
-            "        <Payload contentType=\"application/json\">{\"Greeting\": \"Jai Ganesh\", \"status\": \"Success\"}</Payload>\n" +
-            "    </Set>\n" +
-            "</AssignMessage>");
-
-        for (Map.Entry<String, String> entry : policyMap.entrySet()) {
-            Files.writeString(polDir.resolve(entry.getKey() + ".xml"), entry.getValue());
-        }
-
-        // --- Build ProxyEndpoint ---
+        // 1. Minimum ProxyEndpoint - No Policies, No Steps
         String proxyContent = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
                 "<ProxyEndpoint name=\"default\">\n" +
-                "    <PreFlow>\n" +
-                "        <Request>\n" +
-                "            <Step><Name>CORS-1</Name></Step>\n" +
-                "        </Request>\n" +
-                "        <Response>\n" +
-                "            <Step><Name>AM-Response-template</Name></Step>\n" +
-                "        </Response>\n" +
-                "    </PreFlow>\n" +
                 "    <HTTPProxyConnection>\n" +
                 "        <BasePath>/v1/" + apiName.toLowerCase() + "</BasePath>\n" +
                 "    </HTTPProxyConnection>\n" +
@@ -76,24 +43,21 @@ public class ApigeeTransformer {
                 "</ProxyEndpoint>";
         Files.writeString(proxDir.resolve("default.xml"), proxyContent);
 
-        // --- Build TargetEndpoint ---
+        // 2. Minimum TargetEndpoint
         Files.writeString(targDir.resolve("default.xml"), 
             "<TargetEndpoint name=\"default\">\n" +
-            "    <HTTPTargetConnection><URL>" + targetUrl + "</URL></HTTPTargetConnection>\n" +
+            "    <HTTPTargetConnection>\n" +
+            "        <URL>https://mocktarget.apigee.net</URL>\n" +
+            "    </HTTPTargetConnection>\n" +
             "</TargetEndpoint>");
 
-        // --- Build Manifest ---
+        // 3. Minimum Manifest
         Files.writeString(apiproxy.resolve(apiName + ".xml"), 
             "<APIProxy name=\"" + apiName + "\">\n" +
-            "    <Policies>\n" +
-            "        <Policy>CORS-1</Policy>\n" +
-            "        <Policy>AM-Response-template</Policy>\n" +
-            "    </Policies>\n" +
             "    <ProxyEndpoints><ProxyEndpoint>default</ProxyEndpoint></ProxyEndpoints>\n" +
             "    <TargetEndpoints><TargetEndpoint>default</TargetEndpoint></TargetEndpoints>\n" +
             "</APIProxy>");
 
-        // ZIP the bundle
         File zipFile = new File(apiName + ".zip");
         try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
             Files.walk(apiproxy).filter(p -> !Files.isDirectory(p)).forEach(p -> {
