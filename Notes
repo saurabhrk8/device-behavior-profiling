@@ -25,25 +25,19 @@ public class ApigeeTransformer {
     }
 
     private File createApigeeBundle(String apiName) throws IOException {
-        Path tempDir = Files.createTempDirectory("apigee_phase1_");
+        Path tempDir = Files.createTempDirectory("apigee_phase1b_");
         Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
         Path polDir = Files.createDirectories(apiproxy.resolve("policies"));
         Path proxDir = Files.createDirectories(apiproxy.resolve("proxies"));
         Path targDir = Files.createDirectories(apiproxy.resolve("targets"));
 
-        // Step 1: Add only the two most universal policies
+        // Only ONE policy: AssignMessage (The 'Safe' Policy)
         Map<String, String> policyMap = new LinkedHashMap<>();
-
-        policyMap.put("CORS-1", 
-            "<CORS name=\"CORS-1\">\n" +
-            "    <AllowOrigins>*</AllowOrigins>\n" +
-            "    <AllowMethods>GET, POST, OPTIONS</AllowMethods>\n" +
-            "</CORS>");
         
         policyMap.put("AM-Response-template", 
             "<AssignMessage name=\"AM-Response-template\">\n" +
             "    <Set>\n" +
-            "        <Payload contentType=\"application/json\">{\"Greeting\": \"Jai Ganesh\", \"api\": \"" + apiName + "\"}</Payload>\n" +
+            "        <Payload contentType=\"application/json\">{\"Greeting\": \"Jai Ganesh\", \"status\": \"Baseline Test\"}</Payload>\n" +
             "    </Set>\n" +
             "</AssignMessage>");
 
@@ -51,13 +45,10 @@ public class ApigeeTransformer {
             Files.writeString(polDir.resolve(entry.getKey() + ".xml"), entry.getValue());
         }
 
-        // --- Build ProxyEndpoint with Steps ---
+        // --- Build ProxyEndpoint ---
         String proxyContent = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
                 "<ProxyEndpoint name=\"default\">\n" +
                 "    <PreFlow>\n" +
-                "        <Request>\n" +
-                "            <Step><Name>CORS-1</Name></Step>\n" +
-                "        </Request>\n" +
                 "        <Response>\n" +
                 "            <Step><Name>AM-Response-template</Name></Step>\n" +
                 "        </Response>\n" +
@@ -78,11 +69,10 @@ public class ApigeeTransformer {
             "    </HTTPTargetConnection>\n" +
             "</TargetEndpoint>");
 
-        // --- Build Manifest with Policy Registration ---
+        // --- Build Manifest ---
         Files.writeString(apiproxy.resolve(apiName + ".xml"), 
             "<APIProxy name=\"" + apiName + "\">\n" +
             "    <Policies>\n" +
-            "        <Policy>CORS-1</Policy>\n" +
             "        <Policy>AM-Response-template</Policy>\n" +
             "    </Policies>\n" +
             "    <ProxyEndpoints><ProxyEndpoint>default</ProxyEndpoint></ProxyEndpoints>\n" +
