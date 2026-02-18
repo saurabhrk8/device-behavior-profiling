@@ -46,76 +46,76 @@ public class ApigeeTransformer {
 
         Map<String, String> policyMap = new LinkedHashMap<>();
 
-        // --- 1. EXTENSION POLICIES ---
-        policyMap.put("AssertCondition-1", "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<AssertCondition name=\"AssertCondition-1\">\n    <DisplayName>Assert Condition 1</DisplayName>\n    <Condition>request.header.Content-Type == \"application/json\"</Condition>\n</AssertCondition>");
-        policyMap.put("ExternalCallout-1", "<ExternalCallout enabled=\"true\" continueOnError=\"false\" name=\"ExternalCallout-1\">\n  <DisplayName>External Callout 1</DisplayName>\n  <TimeoutMs>5000</TimeoutMs>\n  <GrpcConnection><Server name=\"external-target-server\"/></GrpcConnection>\n</ExternalCallout>");
-
-        // --- 2. MEDIATION POLICIES ---
-        policyMap.put("CORS-1", "<CORS name=\"CORS-1\">\n  <AllowOrigins>*</AllowOrigins>\n  <AllowMethods>GET, PUT, POST, DELETE</AllowMethods>\n  <AllowHeaders>origin, x-requested-with, accept, content-type</AllowHeaders>\n</CORS>");
-        policyMap.put("GraphQL-1", "<GraphQL name=\"GraphQL-1\">\n  <Source>request</Source>\n  <OperationType>query</OperationType>\n  <MaxDepth>10</MaxDepth>\n</GraphQL>");
-        policyMap.put("HTTPModifier-1", "<HTTPModifier name=\"HTTPModifier-1\">\n  <Add><Headers><Header name=\"X-Migrated\">true</Header></Headers></Add>\n  <AssignTo createNew=\"false\" transport=\"http\" type=\"request\"/>\n</HTTPModifier>");
-        policyMap.put("JSONtoXML-1", "<JSONToXML name=\"JSONtoXML-1\">\n    <Source>request</Source>\n    <Options><ObjectRootElementName>Root</ObjectRootElementName></Options>\n</JSONToXML>");
-        policyMap.put("OASValidation-1", "<OASValidation name=\"OASValidation-1\">\n    <OASResource>openapi.yaml</OASResource>\n</OASValidation>");
-        policyMap.put("PublishMessage-1", "<PublishMessage name=\"PublishMessage-1\">\n    <CloudPubSub><Topic>projects/my-project/topics/api-logs</Topic></CloudPubSub>\n</PublishMessage>");
-        policyMap.put("RaiseFault-1", "<RaiseFault name=\"RaiseFault-1\">\n    <FaultResponse><Set><StatusCode>500</StatusCode><Payload>Internal Server Error</Payload></Set></FaultResponse>\n</RaiseFault>");
-        policyMap.put("ReadPropertySet-1", "<ReadPropertySet name=\"ReadPropertySet-1\">\n  <Read><Name>my-props</Name><Key>key1</Key><AssignTo>var1</AssignTo></Read>\n</ReadPropertySet>");
-        policyMap.put("SOAPMessageValidation-1", "<MessageValidation name=\"SOAPMessageValidation-1\">\n    <SOAPMessage version=\"1.1\"/>\n    <Source>request</Source>\n</MessageValidation>");
-        policyMap.put("XMLtoJSON-1", "<XMLToJSON name=\"XMLtoJSON-1\">\n    <Source>response</Source>\n    <Options><RecognizeNumber>true</RecognizeNumber></Options>\n</XMLToJSON>");
-
-        // --- 3. SECURITY POLICIES ---
-        policyMap.put("AccessControl-1", "<AccessControl name=\"AccessControl-1\">\n    <IPRules noRuleMatchAction=\"ALLOW\">\n        <MatchRule action=\"DENY\"><SourceAddress mask=\"24\">192.168.1.0</SourceAddress></MatchRule>\n    </IPRules>\n</AccessControl>");
-        policyMap.put("HMAC-1", "<HMAC name=\"HMAC-1\"><Algorithm>SHA-256</Algorithm><SecretKey ref=\"private.key\"/></HMAC>");
-        policyMap.put("DecodeJWT-1", "<DecodeJWT name=\"DecodeJWT-1\"><Source>request.header.Authorization</Source></DecodeJWT>");
-        policyMap.put("VerifyJWT-1", "<VerifyJWT name=\"VerifyJWT-1\"><Algorithm>HS256</Algorithm><Source>request.header.Authorization</Source><SecretKey><Value ref=\"private.secret\"/></SecretKey></VerifyJWT>");
-        policyMap.put("VerifyIAM-1", "<VerifyIAM name=\"VerifyIAM-1\"><CredentialSource>flow_variable_name</CredentialSource></VerifyIAM>");
-
-        // --- 4. TRAFFIC MANAGEMENT ---
+        // --- FIXED POLICIES (Schema Validated) ---
+        
         policyMap.put("SpikeArrest-1", "<SpikeArrest name=\"SpikeArrest-1\"><Rate>10ps</Rate></SpikeArrest>");
+        
+        policyMap.put("AccessControl-1", "<AccessControl name=\"AccessControl-1\"><IPRules noRuleMatchAction=\"ALLOW\"><MatchRule action=\"DENY\"><SourceAddress mask=\"24\">192.168.1.0</SourceAddress></MatchRule></IPRules></AccessControl>");
+        
+        policyMap.put("VerifyIAM-1", "<VerifyIAM name=\"VerifyIAM-1\"><CredentialSource>request.header.X-IAM-Token</CredentialSource></VerifyIAM>");
+        
+        policyMap.put("VerifyJWT-1", "<VerifyJWT name=\"VerifyJWT-1\"><Algorithm>HS256</Algorithm><Source>request.header.Authorization</Source><SecretKey><Value ref=\"private.secret\"/></SecretKey></VerifyJWT>");
+        
+        policyMap.put("DecodeJWT-1", "<DecodeJWT name=\"DecodeJWT-1\"><Source>request.header.Authorization</Source></DecodeJWT>");
+        
+        // FIX: Added <Message>
+        policyMap.put("HMAC-1", "<HMAC name=\"HMAC-1\"><Algorithm>SHA-256</Algorithm><Message>request.content</Message><SecretKey ref=\"private.key\"/></HMAC>");
 
-        // --- 5. JAI GANESH RESPONSE ---
-        policyMap.put("AM-Response-template", "<AssignMessage name=\"AM-Response-template\">\n<Set><Payload contentType=\"application/json\" variablePrefix=\"%\" variableSuffix=\"%\">{\"Greeting\": \"Jai Ganesh\", \"api\": \"" + apiName + "\", \"timestamp\": \"%system.time%\"}</Payload></Set>\n</AssignMessage>");
+        policyMap.put("CORS-1", "<CORS name=\"CORS-1\"><AllowOrigins>*</AllowOrigins><AllowMethods>GET, POST, OPTIONS</AllowMethods></CORS>");
+        
+        // FIX: Added oas:// prefix
+        policyMap.put("OASValidation-1", "<OASValidation name=\"OASValidation-1\"><OASResource>oas://openapi.yaml</OASResource></OASValidation>");
+        
+        policyMap.put("SOAPMessageValidation-1", "<MessageValidation name=\"SOAPMessageValidation-1\"><SOAPMessage version=\"1.1\"/><Source>request</Source></MessageValidation>");
+        
+        // FIX: Added <Action>
+        policyMap.put("GraphQL-1", "<GraphQL name=\"GraphQL-1\"><Action>parse</Action><Source>request</Source><OperationType>query</OperationType></GraphQL>");
+        
+        policyMap.put("JSONtoXML-1", "<JSONToXML name=\"JSONtoXML-1\"><Source>request</Source></JSONToXML>");
+        
+        policyMap.put("XMLtoJSON-1", "<XMLToJSON name=\"XMLtoJSON-1\"><Source>response</Source></XMLToJSON>");
+        
+        policyMap.put("AssertCondition-1", "<AssertCondition name=\"AssertCondition-1\"><Condition>request.verb == \"POST\"</Condition></AssertCondition>");
+        
+        policyMap.put("HTTPModifier-1", "<HTTPModifier name=\"HTTPModifier-1\"><Add><Headers><Header name=\"X-Target\">Apigee</Header></Headers></Add></HTTPModifier>");
+        
+        policyMap.put("ReadPropertySet-1", "<ReadPropertySet name=\"ReadPropertySet-1\"><Read><Name>props</Name><Key>k1</Key><AssignTo>v1</AssignTo></Read></ReadPropertySet>");
+        
+        policyMap.put("ExternalCallout-1", "<ExternalCallout name=\"ExternalCallout-1\"><TimeoutMs>5000</TimeoutMs><GrpcConnection><Server name=\"ext-server\"/></GrpcConnection></ExternalCallout>");
+        
+        // FIX: Added <Source>
+        policyMap.put("PublishMessage-1", "<PublishMessage name=\"PublishMessage-1\"><Source>request</Source><CloudPubSub><Topic>projects/p1/topics/t1</Topic></CloudPubSub></PublishMessage>");
+        
+        policyMap.put("RaiseFault-1", "<RaiseFault name=\"RaiseFault-1\"><FaultResponse><Set><StatusCode>500</StatusCode></Set></FaultResponse></RaiseFault>");
+        
+        policyMap.put("AM-Response-template", "<AssignMessage name=\"AM-Response-template\"><Set><Payload contentType=\"application/json\" variablePrefix=\"%\" variableSuffix=\"%\">{\"Greeting\": \"Jai Ganesh\", \"api\": \"" + apiName + "\", \"timestamp\": \"%system.time%\"}</Payload></Set></AssignMessage>");
 
-        // Write all policies to the folder
+        // Write files
         for (Map.Entry<String, String> entry : policyMap.entrySet()) {
             Files.writeString(polDir.resolve(entry.getKey() + ".xml"), entry.getValue());
         }
 
-        // --- PROXY ENDPOINT ---
-        Files.writeString(proxDir.resolve("default.xml"), 
-            "<ProxyEndpoint name=\"default\">\n" +
-            "    <PreFlow><Request>\n" +
-            "        <Step><Name>SpikeArrest-1</Name></Step>\n" +
-            "        <Step><Name>CORS-1</Name></Step>\n" +
-            "    </Request><Response>\n" +
-            "        <Step><Name>AM-Response-template</Name></Step>\n" +
-            "    </Response></PreFlow>\n" +
-            "    <HTTPProxyConnection><BasePath>/v1/" + apiName.toLowerCase() + "</BasePath></HTTPProxyConnection>\n" +
-            "    <RouteRule name=\"default\"><TargetEndpoint>default</TargetEndpoint></RouteRule>\n" +
-            "</ProxyEndpoint>");
-
-        // --- TARGET ENDPOINT ---
-        Files.writeString(targDir.resolve("default.xml"), 
-            "<TargetEndpoint name=\"default\">\n" +
-            "    <HTTPTargetConnection><URL>" + targetUrl + "</URL></HTTPTargetConnection>\n" +
-            "</TargetEndpoint>");
-
-        // --- MANIFEST (Registration of all 18 policies) ---
-        StringBuilder manifestPolicies = new StringBuilder();
-        for (String pName : policyMap.keySet()) {
-            manifestPolicies.append("        <Policy>").append(pName).append("</Policy>\n");
+        // --- Build PreFlow ---
+        StringBuilder reqSteps = new StringBuilder();
+        for (String p : policyMap.keySet()) {
+            if (!p.equals("AM-Response-template") && !p.equals("RaiseFault-1") && !p.equals("XMLtoJSON-1")) {
+                reqSteps.append("            <Step><Name>").append(p).append("</Name></Step>\n");
+            }
         }
 
-        Files.writeString(apiproxy.resolve(apiName + ".xml"), 
-            "<APIProxy name=\"" + apiName + "\">\n" +
-            "    <BasePaths>/v1/" + apiName.toLowerCase() + "</BasePaths>\n" +
-            "    <Policies>\n" + manifestPolicies + "    </Policies>\n" +
-            "    <ProxyEndpoints><ProxyEndpoint>default</ProxyEndpoint></ProxyEndpoints>\n" +
-            "    <TargetEndpoints><TargetEndpoint>default</TargetEndpoint></TargetEndpoints>\n" +
-            "</APIProxy>");
+        Files.writeString(proxDir.resolve("default.xml"), 
+            "<ProxyEndpoint name=\"default\">\n<PreFlow><Request>\n" + reqSteps + "</Request>\n" +
+            "<Response><Step><Name>XMLtoJSON-1</Name></Step><Step><Name>AM-Response-template</Name></Step></Response></PreFlow>\n" +
+            "<HTTPProxyConnection><BasePath>/v1/" + apiName.toLowerCase() + "</BasePath></HTTPProxyConnection><RouteRule name=\"default\"><TargetEndpoint>default</TargetEndpoint></RouteRule></ProxyEndpoint>");
+
+        Files.writeString(targDir.resolve("default.xml"), "<TargetEndpoint name=\"default\"><HTTPTargetConnection><URL>" + targetUrl + "</URL></HTTPTargetConnection></TargetEndpoint>");
+
+        StringBuilder manifest = new StringBuilder();
+        for (String p : policyMap.keySet()) manifest.append("        <Policy>").append(p).append("</Policy>\n");
+        Files.writeString(apiproxy.resolve(apiName + ".xml"), "<APIProxy name=\"" + apiName + "\"><Policies>" + manifest + "</Policies><ProxyEndpoints><ProxyEndpoint>default</ProxyEndpoint></ProxyEndpoints><TargetEndpoints><TargetEndpoint>default</TargetEndpoint></TargetEndpoints></APIProxy>");
 
         if (!oasYaml.isEmpty()) Files.writeString(resDir.resolve("openapi.yaml"), oasYaml);
 
-        // ZIP Assembly
         File zipFile = new File(apiName + ".zip");
         try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
             Files.walk(apiproxy).filter(p -> !Files.isDirectory(p)).forEach(p -> {
@@ -141,7 +141,7 @@ public class ApigeeTransformer {
     }
 
     private String generateOasFromWsdl(String wsdl, String name, String url) {
-        if (wsdl.isEmpty()) return "";
+        if (wsdl == null || wsdl.isEmpty()) return "";
         StringBuilder yaml = new StringBuilder("openapi: 3.0.0\ninfo:\n  title: " + name + "\n  version: 1.0.0\npaths:\n");
         Matcher m = Pattern.compile("operation\\s+name=\"(.*?)\"").matcher(wsdl);
         while (m.find()) {
