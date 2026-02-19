@@ -26,13 +26,37 @@ public class ApigeeTransformer {
         }
 
         String apiName = extractValue(objectXml, "Name", "API-" + apiId).replaceAll("[^a-zA-Z0-9-]", "-");
+        // NEW: Specific extraction logic for 'bap' targets
         String targetUrl = extractTargetUrl(objectXml, wsdlContent);
 
         return createApigeeBundle(apiName, targetUrl);
     }
 
+    private String extractTargetUrl(String xml, String wsdl) {
+        // Step 1: Look for all URLs in objectdata.xml inside <Address> or endPoint tags
+        List<String> urls = new ArrayList<>();
+        Matcher m = Pattern.compile(">(https?://[^<]+)<").matcher(xml);
+        while (m.find()) {
+            urls.add(m.group(1).trim());
+        }
+
+        // Step 2: Prioritize the one containing "bap"
+        for (String url : urls) {
+            if (url.toLowerCase().contains("bap")) {
+                return url;
+            }
+        }
+
+        // Step 3: Fallback to WSDL if no 'bap' URL found in objectdata
+        Matcher wsdlMatch = Pattern.compile("soap:address\\s+location=\"(.*?)\"", Pattern.CASE_INSENSITIVE).matcher(wsdl);
+        if (wsdlMatch.find()) return wsdlMatch.group(1).trim();
+
+        // Step 4: Final fallback to first available URL or mock
+        return urls.isEmpty() ? "https://mocktarget.apigee.net" : urls.get(0);
+    }
+
     private File createApigeeBundle(String apiName, String targetUrl) throws IOException {
-        Path tempDir = Files.createTempDirectory("apigee_intermediate_bundle_");
+        Path tempDir = Files.createTempDirectory("apigee_intermediate_v2_");
         Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
         Path polDir = Files.createDirectories(apiproxy.resolve("policies"));
         Path proxDir = Files.createDirectories(apiproxy.resolve("proxies"));
@@ -40,65 +64,57 @@ public class ApigeeTransformer {
 
         Map<String, String> policyMap = new LinkedHashMap<>();
 
-        // 1. Security (Advanced - now allowed)
-        policyMap.put("Verify-API-Key-1", "<VerifyAPIKey name=\"Verify-API-Key-1\"><APIKey ref=\"request.header.x-api-key\"/></VerifyAPIKey>");
-        policyMap.put("Verify-JWT-1", "<VerifyJWT name=\"Verify-JWT-1\"><Algorithm>RS256</Algorithm><Source>request.header.Authorization</Source><PublicKey><Value ref=\"public.key\"/></PublicKey></VerifyJWT>");
-        
-        // 2. Traffic Management
+        // Policies (Schema Validated)
         policyMap.put("SpikeArrest-1", "<SpikeArrest name=\"SpikeArrest-1\"><Rate>10ps</Rate></SpikeArrest>");
-
-        // 3. Mediation (XSD Validated)
+        policyMap.put("Verify-API-Key-1", "<VerifyAPIKey name=\"Verify-API-Key-1\"><APIKey ref=\"request.header.x-api-key\"/></VerifyAPIKey>");
         policyMap.put("JSONtoXML-1", "<JSONToXML name=\"JSONtoXML-1\"><Source>request</Source><Options><ObjectRootElementName>Root</ObjectRootElementName></Options></JSONToXML>");
-        
-        // Fixed XMLtoJSON (Options element only, per xsd validation error fix)
-        policyMap.put("XMLtoJSON-1", "<XMLToJSON name=\"XMLtoJSON-1\"><Source>response</Source><Options><RecognizeNumber>true</RecognizeNumber><RecognizeBoolean>true</RecognizeBoolean></Options></XMLToJSON>");
+        policyMap.put("XMLtoJSON-1", "<XMLToJSON name=\"XMLtoJSON-1\"><Source>response</Source><Options><RecognizeNumber>true</RecognizeNumber></Options></XMLToJSON>");
 
-        // 4. Message Handling (XSD Validated AssignMessage)
-        policyMap.put("AM-SetHeaders", 
-            "<AssignMessage name=\"AM-SetHeaders\">\n" +
-            "    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>\n" +
-            "    <Add><Headers><Header name=\"X-Migrated\">true</Header></Headers></Add>\n" +
-            "    <AssignTo createNew=\"false\" transport=\"http\" type=\"request\"/>\n" +
-            "</AssignMessage>");
-
-        // 5. SOAP/XML Validation (Advanced)
-        policyMap.put("SOAP-Validation-1", "<MessageValidation name=\"SOAP-Validation-1\"><SOAPMessage version=\"1.1\"/><Source>request</Source></MessageValidation>");
-
-        // Write all policies
         for (Map.Entry<String, String> entry : policyMap.entrySet()) {
             Files.writeString(polDir.resolve(entry.getKey() + ".xml"), "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + entry.getValue());
         }
 
-        // --- ProxyEndpoint Request/Response Flow ---
-        String reqSteps = 
-            "            <Step><Name>SpikeArrest-1</Name></Step>\n" +
-            "            <Step><Name>Verify-API-Key-1</Name></Step>\n" +
-            "            <Step><Name>SOAP-Validation-1</Name></Step>\n" +
-            "            <Step><Name>JSONtoXML-1</Name></Step>\n" +
-            "            <Step><Name>AM-SetHeaders</Name></Step>\n";
+        // ProxyEndpoint
+        String proxyContent = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                "<ProxyEndpoint name=\"default\">\n" +
+                "    <PreFlow>\n" +
+                "        <Request>\n" +
+                "            <Step><Name>SpikeArrest-1</Name></Step>\n" +
+                "            <Step><Name>Verify-API-Key-1</Name></Step>\n" +
+                "            <Step><Name>JSONtoXML-1</Name></Step>\n" +
+                "        </Request>\n" +
+                "        <Response>\n" +
+                "            <Step><Name>XMLtoJSON-1</Name></Step>\n" +
+                "        </Response>\n" +
+                "    </PreFlow>\n" +
+                "    <HTTPProxyConnection>\n" +
+                "        <BasePath>/v1/" + apiName.toLowerCase() + "</BasePath>\n" +
+                "    </HTTPProxyConnection>\n" +
+                "    <RouteRule name=\"default\">\n" +
+                "        <TargetEndpoint>default</TargetEndpoint>\n" +
+                "    </RouteRule>\n" +
+                "</ProxyEndpoint>";
+        Files.writeString(proxDir.resolve("default.xml"), proxyContent);
 
-        String resSteps = 
-            "            <Step><Name>XMLtoJSON-1</Name></Step>\n";
+        // TargetEndpoint - Now using the 'bap' URL
+        Files.writeString(targDir.resolve("default.xml"), 
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+            "<TargetEndpoint name=\"default\">\n" +
+            "    <HTTPTargetConnection>\n" +
+            "        <URL>" + targetUrl + "</URL>\n" +
+            "    </HTTPTargetConnection>\n" +
+            "</TargetEndpoint>");
 
-        Files.writeString(proxDir.resolve("default.xml"), 
-            "<ProxyEndpoint name=\"default\">\n<PreFlow><Request>\n" + reqSteps + "</Request>\n" +
-            "<Response>\n" + resSteps + "</Response></PreFlow>\n" +
-            "<HTTPProxyConnection><BasePath>/v1/" + apiName.toLowerCase() + "</BasePath></HTTPProxyConnection><RouteRule name=\"default\"><TargetEndpoint>default</TargetEndpoint></RouteRule></ProxyEndpoint>");
-
-        Files.writeString(targDir.resolve("default.xml"), "<TargetEndpoint name=\"default\"><HTTPTargetConnection><URL>" + targetUrl + "</URL></HTTPTargetConnection></TargetEndpoint>");
-
-        // --- API Proxy Manifest ---
-        StringBuilder manifestPolicies = new StringBuilder();
-        for (String p : policyMap.keySet()) manifestPolicies.append("        <Policy>").append(p).append("</Policy>\n");
-        
+        // Manifest
+        StringBuilder manifest = new StringBuilder();
+        for (String p : policyMap.keySet()) manifest.append("        <Policy>").append(p).append("</Policy>\n");
         Files.writeString(apiproxy.resolve(apiName + ".xml"), 
             "<APIProxy name=\"" + apiName + "\">\n" +
-            "    <Policies>\n" + manifestPolicies + "    </Policies>\n" +
+            "    <Policies>\n" + manifest + "    </Policies>\n" +
             "    <ProxyEndpoints><ProxyEndpoint>default</ProxyEndpoint></ProxyEndpoints>\n" +
             "    <TargetEndpoints><TargetEndpoint>default</TargetEndpoint></TargetEndpoints>\n" +
             "</APIProxy>");
 
-        // ZIP Generation
         File zipFile = new File(apiName + ".zip");
         try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
             Files.walk(apiproxy).filter(p -> !Files.isDirectory(p)).forEach(p -> {
@@ -110,17 +126,6 @@ public class ApigeeTransformer {
             });
         }
         return zipFile;
-    }
-
-    private String extractTargetUrl(String xml, String wsdl) {
-        String url = "";
-        Matcher m = Pattern.compile("soap:address\\s+location=\"(.*?)\"", Pattern.CASE_INSENSITIVE).matcher(wsdl);
-        if (m.find()) url = m.group(1).trim();
-        if (url.isEmpty()) {
-            Matcher m2 = Pattern.compile("useType=\"endPoint\"[^>]*?>(.*?)</", Pattern.DOTALL).matcher(xml);
-            url = m2.find() ? m2.group(1).trim() : "https://mocktarget.apigee.net";
-        }
-        return url;
     }
 
     private String extractValue(String xml, String tag, String def) {
