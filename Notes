@@ -1,34 +1,9 @@
-package com.migration;
+# Set all environment variables
+export AKANA_HOST='https://akana.corporate.com'
+export AKANA_DOMAIN='Standard-Ldap'
+export AKANA_USERNAME='migration_service_user'
+export AKANA_PASSWORD='p@ssword123'
+export API_ID='generation-and-delivery-corpoarte-lending'
 
-public class MigratorAPP {
-    // SECURITY FIX: All configuration and credentials moved to Environment Variables
-    private static final String AKANA_HOST = System.getenv("AKANA_HOST");
-    private static final String AKANA_DOMAIN = System.getenv("AKANA_DOMAIN");
-    private static final String AKANA_USER = System.getenv("AKANA_USERNAME");
-    private static final String AKANA_PASS = System.getenv("AKANA_PASSWORD");
-    // NEW: API ID is now dynamic
-    private static final String API_ID = System.getenv("API_ID");
-
-    public static void main(String[] args) {
-        try {
-            if (AKANA_USER == null || AKANA_PASS == null || API_ID == null) {
-                System.err.println("ERROR: Missing required Env Vars: AKANA_HOST, AKANA_DOMAIN, AKANA_USERNAME, AKANA_PASSWORD, API_ID");
-                System.exit(1);
-            }
-
-            AkanaClient client = new AkanaClient(AKANA_HOST, AKANA_DOMAIN);
-            client.login(AKANA_USER, AKANA_PASS);
-
-            System.out.println("Migrating API ID: " + API_ID);
-            byte[] akanaPackage = client.downloadPackage(API_ID);
-            
-            ApigeeTransformer transformer = new ApigeeTransformer();
-            java.io.File apigeeBundle = transformer.transform(akanaPackage, API_ID);
-
-            System.out.println("Successfully created bundle: " + apigeeBundle.getName());
-
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
-}
+# Run the migrator
+java -cp ".:bin:lib/*" com.migration.MigratorAPP
