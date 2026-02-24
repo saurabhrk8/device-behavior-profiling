@@ -1,180 +1,34 @@
 package com.migration;
 
-public class AkanaMigrator {
-    // SECURITY FIX: Credentials are now fetched from the system environment
+public class MigratorAPP {
+    // SECURITY FIX: All configuration and credentials moved to Environment Variables
+    private static final String AKANA_HOST = System.getenv("AKANA_HOST");
+    private static final String AKANA_DOMAIN = System.getenv("AKANA_DOMAIN");
     private static final String AKANA_USER = System.getenv("AKANA_USERNAME");
     private static final String AKANA_PASS = System.getenv("AKANA_PASSWORD");
+    // NEW: API ID is now dynamic
+    private static final String API_ID = System.getenv("API_ID");
 
-    public void runMigration() {
-        if (AKANA_USER == null || AKANA_PASS == null) {
-            System.err.println("ERROR: Credentials not found. Please set AKANA_USERNAME and AKANA_PASSWORD.");
-            System.exit(1);
+    public static void main(String[] args) {
+        try {
+            if (AKANA_USER == null || AKANA_PASS == null || API_ID == null) {
+                System.err.println("ERROR: Missing required Env Vars: AKANA_HOST, AKANA_DOMAIN, AKANA_USERNAME, AKANA_PASSWORD, API_ID");
+                System.exit(1);
+            }
+
+            AkanaClient client = new AkanaClient(AKANA_HOST, AKANA_DOMAIN);
+            client.login(AKANA_USER, AKANA_PASS);
+
+            System.out.println("Migrating API ID: " + API_ID);
+            byte[] akanaPackage = client.downloadPackage(API_ID);
+            
+            ApigeeTransformer transformer = new ApigeeTransformer();
+            java.io.File apigeeBundle = transformer.transform(akanaPackage, API_ID);
+
+            System.out.println("Successfully created bundle: " + apigeeBundle.getName());
+
+        } catch (Exception e) {
+            e.printStackTrace();
         }
-        
-        System.out.println("Starting migration for user: " + AKANA_USER);
-        // Your existing logic to call Akana APIs and pass bytes to ApigeeTransformer...
     }
 }
-
-
-///////////////////////////
-
-package com.migration;
-
-import java.io.*;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
-import java.util.*;
-import java.util.regex.*;
-import java.util.zip.*;
-
-public class ApigeeTransformer {
-
-    public File transform(byte[] binContent, String apiId) throws Exception {
-        String objectXml = "";
-        String wsdlContent = "";
-        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(binContent))) {
-            ZipEntry entry;
-            while ((entry = zis.getNextEntry()) != null) {
-                byte[] bytes = zis.readAllBytes();
-                String name = entry.getName().toLowerCase();
-                if (name.contains("objectdata.xml")) {
-                    objectXml = new String(bytes, StandardCharsets.UTF_8);
-                } else if (name.endsWith(".wsdl")) {
-                    wsdlContent = new String(bytes, StandardCharsets.UTF_8);
-                }
-            }
-        }
-
-        String apiName = extractValue(objectXml, "Name", "API-" + apiId).replaceAll("[^a-zA-Z0-9-]", "-");
-        // Improved target extraction to find "bap" endpoints
-        String targetUrl = extractTargetUrl(objectXml, wsdlContent);
-
-        return createApigeeBundle(apiName, targetUrl);
-    }
-
-    private String extractTargetUrl(String xml, String wsdl) {
-        List<String> urls = new ArrayList<>();
-        // Extract all strings that look like URLs from objectdata.xml
-        Matcher m = Pattern.compile(">(https?://[^<]+)<").matcher(xml);
-        while (m.find()) {
-            urls.add(m.group(1).trim());
-        }
-
-        // PRIORITY 1: Find the URL containing "bap"
-        for (String url : urls) {
-            if (url.toLowerCase().contains("bap")) {
-                return url;
-            }
-        }
-
-        // PRIORITY 2: Fallback to WSDL soap:address
-        Matcher wsdlMatch = Pattern.compile("soap:address\\s+location=\"(.*?)\"", Pattern.CASE_INSENSITIVE).matcher(wsdl);
-        if (wsdlMatch.find()) return wsdlMatch.group(1).trim();
-
-        // PRIORITY 3: First available URL or mock
-        return urls.isEmpty() ? "https://mocktarget.apigee.net" : urls.get(0);
-    }
-
-    private File createApigeeBundle(String apiName, String targetUrl) throws IOException {
-        Path tempDir = Files.createTempDirectory("apigee_migration_final_");
-        Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
-        Path polDir = Files.createDirectories(apiproxy.resolve("policies"));
-        Path proxDir = Files.createDirectories(apiproxy.resolve("proxies"));
-        Path targDir = Files.createDirectories(apiproxy.resolve("targets"));
-
-        Map<String, String> policyMap = new LinkedHashMap<>();
-
-        // --- POLICY DEFINITIONS (XSD VALIDATED) ---
-        
-        // 1. KVM to avoid hardcoded credentials in Proxy
-        policyMap.put("KVM-Get-Secrets", 
-            "<KeyValueMapOperations name=\"KVM-Get-Secrets\" mapIdentifier=\"Settings\">\n" +
-            "    <Get assignTo=\"private.jwt.publickey\"><Key><Parameter>jwt_key</Parameter></Key></Get>\n" +
-            "    <Scope>environment</Scope>\n" +
-            "</KeyValueMapOperations>");
-
-        // 2. JWT Verification
-        policyMap.put("Verify-JWT-1", 
-            "<VerifyJWT name=\"Verify-JWT-1\">\n" +
-            "    <Algorithm>RS256</Algorithm>\n" +
-            "    <Source>request.header.Authorization</Source>\n" +
-            "    <PublicKey><Value ref=\"private.jwt.publickey\"/></PublicKey>\n" +
-            "</VerifyJWT>");
-
-        // 3. Traffic Management
-        policyMap.put("SpikeArrest-1", "<SpikeArrest name=\"SpikeArrest-1\"><Rate>10ps</Rate></SpikeArrest>");
-
-        // 4. Mediation (XMLtoJSON FIX: Options element only)
-        policyMap.put("XMLtoJSON-1", 
-            "<XMLToJSON name=\"XMLtoJSON-1\">\n" +
-            "    <Source>response</Source>\n" +
-            "    <Options><RecognizeNumber>true</RecognizeNumber><RecognizeBoolean>true</RecognizeBoolean></Options>\n" +
-            "</XMLToJSON>");
-
-        // 5. AssignMessage (Standard format)
-        policyMap.put("AM-Set-Target", 
-            "<AssignMessage name=\"AM-Set-Target\">\n" +
-            "    <AssignVariable><Name>target.url</Name><Value>" + targetUrl + "</Value></AssignVariable>\n" +
-            "    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>\n" +
-            "    <AssignTo createNew=\"false\" transport=\"http\" type=\"request\"/>\n" +
-            "</AssignMessage>");
-
-        // Write Policies
-        for (Map.Entry<String, String> entry : policyMap.entrySet()) {
-            Files.writeString(polDir.resolve(entry.getKey() + ".xml"), "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + entry.getValue());
-        }
-
-        // --- ProxyEndpoint ---
-        String reqSteps = 
-            "            <Step><Name>KVM-Get-Secrets</Name></Step>\n" +
-            "            <Step><Name>SpikeArrest-1</Name></Step>\n" +
-            "            <Step><Name>Verify-JWT-1</Name></Step>\n" +
-            "            <Step><Name>AM-Set-Target</Name></Step>\n";
-
-        String proxyContent = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-                "<ProxyEndpoint name=\"default\">\n" +
-                "    <PreFlow><Request>\n" + reqSteps + "    </Request>\n" +
-                "    <Response><Step><Name>XMLtoJSON-1</Name></Step></Response></PreFlow>\n" +
-                "    <HTTPProxyConnection><BasePath>/v1/" + apiName.toLowerCase() + "</BasePath></HTTPProxyConnection>\n" +
-                "    <RouteRule name=\"default\"><TargetEndpoint>default</TargetEndpoint></RouteRule>\n" +
-                "</ProxyEndpoint>";
-        Files.writeString(proxDir.resolve("default.xml"), proxyContent);
-
-        // --- TargetEndpoint ---
-        Files.writeString(targDir.resolve("default.xml"), 
-            "<TargetEndpoint name=\"default\"><HTTPTargetConnection><URL>" + targetUrl + "</URL></HTTPTargetConnection></TargetEndpoint>");
-
-        // --- Manifest ---
-        StringBuilder pList = new StringBuilder();
-        for (String p : policyMap.keySet()) pList.append("        <Policy>").append(p).append("</Policy>\n");
-        Files.writeString(apiproxy.resolve(apiName + ".xml"), 
-            "<APIProxy name=\"" + apiName + "\">\n<Policies>\n" + pList + "    </Policies>\n" +
-            "<ProxyEndpoints><ProxyEndpoint>default</ProxyEndpoint></ProxyEndpoints>\n" +
-            "<TargetEndpoints><TargetEndpoint>default</TargetEndpoint></TargetEndpoints></APIProxy>");
-
-        return zipBundle(tempDir, apiproxy, apiName);
-    }
-
-    private File zipBundle(Path tempDir, Path apiproxy, String apiName) throws IOException {
-        File zipFile = new File(apiName + ".zip");
-        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
-            Files.walk(apiproxy).filter(p -> !Files.isDirectory(p)).forEach(p -> {
-                try {
-                    zos.putNextEntry(new ZipEntry(tempDir.relativize(p).toString().replace("\\", "/")));
-                    Files.copy(p, zos);
-                    zos.closeEntry();
-                } catch (IOException e) { }
-            });
-        }
-        return zipFile;
-    }
-
-    private String extractValue(String xml, String tag, String def) {
-        Pattern p = Pattern.compile("<(?:\\w+:)??" + tag + ">(.*?)</", Pattern.DOTALL);
-        Matcher m = p.matcher(xml);
-        return m.find() ? m.group(1).trim() : def;
-    }
-}
-
-////////////////////
