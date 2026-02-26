@@ -1,42 +1,43 @@
 {
-  "api_metadata": {
-    "api_name": "weather-service-v1",
-    "display_name": "Weather Information API",
-    "description": "Provides real-time weather data for global cities.",
-    "version": "1.0.0",
-    "base_path": "/v1/weather"
+  "request_info": {
+    "onboarding_id": "REQ-99283",
+    "requested_by": "user@capgemini.com",
+    "timestamp": "2026-02-26T17:30:00Z"
   },
-  "source_details": {
-    "oas_url": "https://api.example.com/specs/weather-oas.yaml",
-    "oas_content_type": "application/yaml",
-    "oas_version": "3.0"
-  },
-  "backend_config": {
-    "target_url": "https://backend.internal.example.com/api",
-    "environment": "sandbox",
-    "timeout_ms": 30000
-  },
-  "security_settings": {
-    "auth_type": "OAuthV2",
-    "quota": {
-      "limit": "1000",
-      "interval": "1",
-      "time_unit": "month"
-    },
-    "cors_enabled": true
-  },
-  "repository_destination": {
-    "platform": "gitlab",
-    "repo_name": "api-proxies-collection",
-    "branch": "main",
-    "folder_path": "/proxies/weather-service-v1",
-    "commit_message": "Onboarding new Weather Service API proxy"
-  },
-  "ci_cd_trigger": {
-    "enable_auto_deploy": true,
-    "pipeline_variables": {
-      "DEPLOY_ENV": "dev",
-      "NOTIFY_EMAIL": "team@example.com"
+  "api_definition": {
+    "api_name": "fx-rates-service",
+    "display_name": "Global Foreign Exchange Rates API",
+    "description": "Real-time currency conversion for Barclays retail banking.",
+    "version": "v1.0.4",
+    "base_path": "/retail/banking/fx-rates",
+    "target_url": "https://backend-internal.barclays.com/v1/rates",
+    "oas_source": {
+      "type": "URL",
+      "value": "https://gitlab.com/specs/fx-rates.yaml",
+      "validation_status": "VALIDATED"
     }
+  },
+  "template_selection": {
+    "template_id": "tpl-apigee-standard-v2",
+    "security_tier": "HIGH",
+    "template_features": {
+      "enable_logging": true,
+      "enable_spike_arrest": true,
+      "enable_quota": true,
+      "quota_limit": "500pm"
+    }
+  },
+  "organizational_context": {
+    "business_unit": "Retail Banking",
+    "domain": "Payments",
+    "environment": "Production",
+    "compliance_tags": ["PCI-DSS", "GDPR"]
+  },
+  "repository_config": {
+    "git_provider": "gitlab",
+    "project_path": "digital-banking/apis/fx-rates",
+    "branch_name": "main",
+    "commit_message": "feat: initial onboarding of fx-rates-service via Backstage",
+    "cicd_trigger": true
   }
 }
