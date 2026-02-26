@@ -1,9 +1,42 @@
-# Set all environment variables
-export AKANA_HOST='https://akana.corporate.com'
-export AKANA_DOMAIN='Standard-Ldap'
-export AKANA_USERNAME='migration_service_user'
-export AKANA_PASSWORD='p@ssword123'
-export API_ID='generation-and-delivery-corpoarte-lending'
-
-# Run the migrator
-java -cp ".:bin:lib/*" com.migration.MigratorAPP
+{
+  "api_metadata": {
+    "api_name": "weather-service-v1",
+    "display_name": "Weather Information API",
+    "description": "Provides real-time weather data for global cities.",
+    "version": "1.0.0",
+    "base_path": "/v1/weather"
+  },
+  "source_details": {
+    "oas_url": "https://api.example.com/specs/weather-oas.yaml",
+    "oas_content_type": "application/yaml",
+    "oas_version": "3.0"
+  },
+  "backend_config": {
+    "target_url": "https://backend.internal.example.com/api",
+    "environment": "sandbox",
+    "timeout_ms": 30000
+  },
+  "security_settings": {
+    "auth_type": "OAuthV2",
+    "quota": {
+      "limit": "1000",
+      "interval": "1",
+      "time_unit": "month"
+    },
+    "cors_enabled": true
+  },
+  "repository_destination": {
+    "platform": "gitlab",
+    "repo_name": "api-proxies-collection",
+    "branch": "main",
+    "folder_path": "/proxies/weather-service-v1",
+    "commit_message": "Onboarding new Weather Service API proxy"
+  },
+  "ci_cd_trigger": {
+    "enable_auto_deploy": true,
+    "pipeline_variables": {
+      "DEPLOY_ENV": "dev",
+      "NOTIFY_EMAIL": "team@example.com"
+    }
+  }
+}
