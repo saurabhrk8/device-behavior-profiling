@@ -1,43 +1,185 @@
-{
-  "request_info": {
-    "onboarding_id": "REQ-99283",
-    "requested_by": "user@capgemini.com",
-    "timestamp": "2026-02-26T17:30:00Z"
-  },
-  "api_definition": {
-    "api_name": "fx-rates-service",
-    "display_name": "Global Foreign Exchange Rates API",
-    "description": "Real-time currency conversion for Barclays retail banking.",
-    "version": "v1.0.4",
-    "base_path": "/retail/banking/fx-rates",
-    "target_url": "https://backend-internal.barclays.com/v1/rates",
-    "oas_source": {
-      "type": "URL",
-      "value": "https://gitlab.com/specs/fx-rates.yaml",
-      "validation_status": "VALIDATED"
+package com.migration;
+
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.charset.StandardCharsets;
+
+public class MigratorAPP {
+    private static final String AKANA_HOST = System.getenv("AKANA_HOST");
+    private static final String AKANA_DOMAIN = System.getenv("AKANA_DOMAIN");
+    private static final String AKANA_USER = System.getenv("AKANA_USERNAME");
+    private static final String AKANA_PASS = System.getenv("AKANA_PASSWORD");
+    private static final String API_ID = System.getenv("API_ID");
+
+    public static void main(String[] args) {
+        try {
+            if (AKANA_USER == null || AKANA_PASS == null || API_ID == null) {
+                System.err.println("ERROR: Missing Env Vars (AKANA_HOST, AKANA_USERNAME, AKANA_PASSWORD, API_ID)");
+                System.exit(1);
+            }
+
+            AkanaClient client = new AkanaClient(AKANA_HOST, AKANA_DOMAIN);
+            client.login(AKANA_USER, AKANA_PASS);
+
+            System.out.println("Fetching Akana Package for: " + API_ID);
+            byte[] akanaPackage = client.downloadPackage(API_ID);
+            
+            // Transform and Generate OAS
+            ApigeeTransformer transformer = new ApigeeTransformer();
+            File apigeeBundle = transformer.transform(akanaPackage, API_ID);
+
+            System.out.println("SUCCESS: Created Apigee Bundle with OAS: " + apigeeBundle.getName());
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
-  },
-  "template_selection": {
-    "template_id": "tpl-apigee-standard-v2",
-    "security_tier": "HIGH",
-    "template_features": {
-      "enable_logging": true,
-      "enable_spike_arrest": true,
-      "enable_quota": true,
-      "quota_limit": "500pm"
-    }
-  },
-  "organizational_context": {
-    "business_unit": "Retail Banking",
-    "domain": "Payments",
-    "environment": "Production",
-    "compliance_tags": ["PCI-DSS", "GDPR"]
-  },
-  "repository_config": {
-    "git_provider": "gitlab",
-    "project_path": "digital-banking/apis/fx-rates",
-    "branch_name": "main",
-    "commit_message": "feat: initial onboarding of fx-rates-service via Backstage",
-    "cicd_trigger": true
-  }
 }
+
+////////////////////
+
+package com.migration;
+
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.util.*;
+import java.util.regex.*;
+import java.util.zip.*;
+
+public class ApigeeTransformer {
+
+    public File transform(byte[] binContent, String apiId) throws Exception {
+        String objectXml = "";
+        String wsdlContent = "";
+        
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(binContent))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                byte[] bytes = zis.readAllBytes();
+                String name = entry.getName().toLowerCase();
+                if (name.contains("objectdata.xml")) {
+                    objectXml = new String(bytes, StandardCharsets.UTF_8);
+                } else if (name.endsWith(".wsdl")) {
+                    wsdlContent = new String(bytes, StandardCharsets.UTF_8);
+                }
+            }
+        }
+
+        String apiName = extractValue(objectXml, "Name", "API-" + apiId).replaceAll("[^a-zA-Z0-9-]", "-");
+        String targetUrl = extractTargetUrl(objectXml, wsdlContent);
+        
+        // --- NEW: Generate OAS YAML ---
+        String oasYaml = generateOasYaml(apiName, wsdlContent, targetUrl);
+
+        return createApigeeBundle(apiName, targetUrl, oasYaml);
+    }
+
+    private String generateOasYaml(String name, String wsdl, String url) {
+        StringBuilder yaml = new StringBuilder();
+        yaml.append("openapi: 3.0.0\n");
+        yaml.append("info:\n  title: ").append(name).append("\n  version: 1.0.0\n");
+        yaml.append("servers:\n  - url: /v1/").append(name.toLowerCase()).append("\n");
+        yaml.append("paths:\n  /:\n    post:\n      summary: SOAP Gateway Operation\n");
+        yaml.append("      responses:\n        '200':\n          description: Successful response\n");
+        
+        // Extract operations from WSDL to list in OAS
+        Matcher m = Pattern.compile("<wsdl:operation name=\"(.*?)\"").matcher(wsdl);
+        yaml.append("      x-soap-operations:\n");
+        while (m.find()) {
+            yaml.append("        - ").append(m.group(1)).append("\n");
+        }
+        return yaml.toString();
+    }
+
+    private File createApigeeBundle(String apiName, String targetUrl, String oasYaml) throws IOException {
+        Path tempDir = Files.createTempDirectory("apigee_full_");
+        Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
+        
+        // Write the OAS file to the root of the bundle
+        Files.writeString(apiproxy.resolve(apiName + "-oas.yaml"), oasYaml);
+
+        // Standard directories
+        Path polDir = Files.createDirectories(apiproxy.resolve("policies"));
+        Path proxDir = Files.createDirectories(apiproxy.resolve("proxies"));
+        Path targDir = Files.createDirectories(apiproxy.resolve("targets"));
+
+        Map<String, String> policyMap = new LinkedHashMap<>();
+
+        // 1. OAS Validation (New - enabled by OAS generation)
+        policyMap.put("OAS-Validation-1", 
+            "<OASValidation name=\"OAS-Validation-1\">\n" +
+            "    <OASResource>oas://" + apiName + "-oas.yaml</OASResource>\n" +
+            "</OASValidation>");
+
+        // 2. Standard Policies (Schema fixes applied)
+        policyMap.put("XMLtoJSON-1", "<XMLToJSON name=\"XMLtoJSON-1\"><Options><RecognizeNumber>true</RecognizeNumber></Options></XMLToJSON>");
+        policyMap.put("SpikeArrest-1", "<SpikeArrest name=\"SpikeArrest-1\"><Rate>10ps</Rate></SpikeArrest>");
+
+        for (Map.Entry<String, String> entry : policyMap.entrySet()) {
+            Files.writeString(polDir.resolve(entry.getKey() + ".xml"), "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + entry.getValue());
+        }
+
+        // Proxy XML
+        Files.writeString(proxDir.resolve("default.xml"), 
+            "<ProxyEndpoint name=\"default\">\n<PreFlow><Request>\n" +
+            "    <Step><Name>SpikeArrest-1</Name></Step>\n" +
+            "    <Step><Name>OAS-Validation-1</Name></Step>\n" +
+            "</Request>\n<Response><Step><Name>XMLtoJSON-1</Name></Step></Response></PreFlow>\n" +
+            "<HTTPProxyConnection><BasePath>/v1/" + apiName.toLowerCase() + "</BasePath></HTTPProxyConnection>\n" +
+            "<RouteRule name=\"default\"><TargetEndpoint>default</TargetEndpoint></RouteRule></ProxyEndpoint>");
+
+        // Target XML
+        Files.writeString(targDir.resolve("default.xml"), 
+            "<TargetEndpoint name=\"default\"><HTTPTargetConnection><URL>" + targetUrl + "</URL></HTTPTargetConnection></TargetEndpoint>");
+
+        // API Proxy Manifest
+        StringBuilder mb = new StringBuilder();
+        for (String p : policyMap.keySet()) mb.append("        <Policy>").append(p).append("</Policy>\n");
+        Files.writeString(apiproxy.resolve(apiName + ".xml"), 
+            "<APIProxy name=\"" + apiName + "\">\n<Policies>\n" + mb + "    </Policies>\n" +
+            "<ProxyEndpoints><ProxyEndpoint>default</ProxyEndpoint></ProxyEndpoints>\n" +
+            "<TargetEndpoints><TargetEndpoint>default</TargetEndpoint></TargetEndpoints></APIProxy>");
+
+        return zipBundle(tempDir, apiproxy, apiName);
+    }
+
+    private String extractTargetUrl(String xml, String wsdl) {
+        List<String> urls = new ArrayList<>();
+        Matcher m = Pattern.compile(">(https?://[^<]+)<").matcher(xml);
+        while (m.find()) { urls.add(m.group(1).trim()); }
+        for (String url : urls) { if (url.toLowerCase().contains("bap")) return url; }
+        return urls.isEmpty() ? "https://mocktarget.apigee.net" : urls.get(0);
+    }
+
+    private String extractValue(String xml, String tag, String def) {
+        Pattern p = Pattern.compile("<(?:\\w+:)??" + tag + ">(.*?)</", Pattern.DOTALL);
+        Matcher m = p.matcher(xml);
+        return m.find() ? m.group(1).trim() : def;
+    }
+
+    private File zipBundle(Path tempDir, Path apiproxy, String apiName) throws IOException {
+        File zipFile = new File(apiName + ".zip");
+        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
+            Files.walk(apiproxy).filter(p -> !Files.isDirectory(p)).forEach(p -> {
+                try {
+                    zos.putNextEntry(new ZipEntry(tempDir.relativize(p).toString().replace("\\", "/")));
+                    Files.copy(p, zos);
+                    zos.closeEntry();
+                } catch (IOException e) { }
+            });
+        }
+        return zipFile;
+    }
+}
+
+///////////////////////////
+
+
+$env:AKANA_HOST="https://akana.corporate.com"
+$env:AKANA_DOMAIN="Standard-Ldap"
+$env:AKANA_USERNAME="admin"
+$env:AKANA_PASSWORD="secure_password"
+$env:API_ID="generation-and-delivery-corpoarte-lending"
+
+java -cp ".;bin;lib/*" com.migration.MigratorAPP
