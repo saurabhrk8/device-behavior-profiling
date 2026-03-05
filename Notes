@@ -1,45 +1,5 @@
 package com.migration;
 
-import java.io.File;
-import java.nio.file.Files;
-import java.nio.charset.StandardCharsets;
-
-public class MigratorAPP {
-    private static final String AKANA_HOST = System.getenv("AKANA_HOST");
-    private static final String AKANA_DOMAIN = System.getenv("AKANA_DOMAIN");
-    private static final String AKANA_USER = System.getenv("AKANA_USERNAME");
-    private static final String AKANA_PASS = System.getenv("AKANA_PASSWORD");
-    private static final String API_ID = System.getenv("API_ID");
-
-    public static void main(String[] args) {
-        try {
-            if (AKANA_USER == null || AKANA_PASS == null || API_ID == null) {
-                System.err.println("ERROR: Missing Env Vars (AKANA_HOST, AKANA_USERNAME, AKANA_PASSWORD, API_ID)");
-                System.exit(1);
-            }
-
-            AkanaClient client = new AkanaClient(AKANA_HOST, AKANA_DOMAIN);
-            client.login(AKANA_USER, AKANA_PASS);
-
-            System.out.println("Fetching Akana Package for: " + API_ID);
-            byte[] akanaPackage = client.downloadPackage(API_ID);
-            
-            // Transform and Generate OAS
-            ApigeeTransformer transformer = new ApigeeTransformer();
-            File apigeeBundle = transformer.transform(akanaPackage, API_ID);
-
-            System.out.println("SUCCESS: Created Apigee Bundle with OAS: " + apigeeBundle.getName());
-
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
-}
-
-////////////////////
-
-package com.migration;
-
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
@@ -68,8 +28,6 @@ public class ApigeeTransformer {
 
         String apiName = extractValue(objectXml, "Name", "API-" + apiId).replaceAll("[^a-zA-Z0-9-]", "-");
         String targetUrl = extractTargetUrl(objectXml, wsdlContent);
-        
-        // --- NEW: Generate OAS YAML ---
         String oasYaml = generateOasYaml(apiName, wsdlContent, targetUrl);
 
         return createApigeeBundle(apiName, targetUrl, oasYaml);
@@ -83,8 +41,7 @@ public class ApigeeTransformer {
         yaml.append("paths:\n  /:\n    post:\n      summary: SOAP Gateway Operation\n");
         yaml.append("      responses:\n        '200':\n          description: Successful response\n");
         
-        // Extract operations from WSDL to list in OAS
-        Matcher m = Pattern.compile("<wsdl:operation name=\"(.*?)\"").matcher(wsdl);
+        Matcher m = Pattern.compile("operation name=\"(.*?)\"").matcher(wsdl);
         yaml.append("      x-soap-operations:\n");
         while (m.find()) {
             yaml.append("        - ").append(m.group(1)).append("\n");
@@ -93,11 +50,14 @@ public class ApigeeTransformer {
     }
 
     private File createApigeeBundle(String apiName, String targetUrl, String oasYaml) throws IOException {
-        Path tempDir = Files.createTempDirectory("apigee_full_");
+        Path tempDir = Files.createTempDirectory("apigee_bundle_v4_");
         Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
         
-        // Write the OAS file to the root of the bundle
-        Files.writeString(apiproxy.resolve(apiName + "-oas.yaml"), oasYaml);
+        // --- NEW: Correct Apigee Resource Structure ---
+        // Path: apiproxy/resources/oas/filename.yaml
+        Path oasDir = Files.createDirectories(apiproxy.resolve("resources").resolve("oas"));
+        String oasFileName = apiName + "-oas.yaml";
+        Files.writeString(oasDir.resolve(oasFileName), oasYaml);
 
         // Standard directories
         Path polDir = Files.createDirectories(apiproxy.resolve("policies"));
@@ -106,21 +66,27 @@ public class ApigeeTransformer {
 
         Map<String, String> policyMap = new LinkedHashMap<>();
 
-        // 1. OAS Validation (New - enabled by OAS generation)
+        // 1. OAS Validation (Correctly referencing the resource)
         policyMap.put("OAS-Validation-1", 
             "<OASValidation name=\"OAS-Validation-1\">\n" +
-            "    <OASResource>oas://" + apiName + "-oas.yaml</OASResource>\n" +
+            "    <OASResource>oas://" + oasFileName + "</OASResource>\n" +
             "</OASValidation>");
 
-        // 2. Standard Policies (Schema fixes applied)
-        policyMap.put("XMLtoJSON-1", "<XMLToJSON name=\"XMLtoJSON-1\"><Options><RecognizeNumber>true</RecognizeNumber></Options></XMLToJSON>");
+        // 2. XMLtoJSON (XSD Fix: Options Only)
+        policyMap.put("XMLtoJSON-1", 
+            "<XMLToJSON name=\"XMLtoJSON-1\">\n" +
+            "    <Source>response</Source>\n" +
+            "    <Options><RecognizeNumber>true</RecognizeNumber></Options>\n" +
+            "</XMLToJSON>");
+
+        // 3. SpikeArrest
         policyMap.put("SpikeArrest-1", "<SpikeArrest name=\"SpikeArrest-1\"><Rate>10ps</Rate></SpikeArrest>");
 
         for (Map.Entry<String, String> entry : policyMap.entrySet()) {
             Files.writeString(polDir.resolve(entry.getKey() + ".xml"), "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + entry.getValue());
         }
 
-        // Proxy XML
+        // Proxy Endpoint
         Files.writeString(proxDir.resolve("default.xml"), 
             "<ProxyEndpoint name=\"default\">\n<PreFlow><Request>\n" +
             "    <Step><Name>SpikeArrest-1</Name></Step>\n" +
@@ -129,19 +95,42 @@ public class ApigeeTransformer {
             "<HTTPProxyConnection><BasePath>/v1/" + apiName.toLowerCase() + "</BasePath></HTTPProxyConnection>\n" +
             "<RouteRule name=\"default\"><TargetEndpoint>default</TargetEndpoint></RouteRule></ProxyEndpoint>");
 
-        // Target XML
+        // Target Endpoint
         Files.writeString(targDir.resolve("default.xml"), 
             "<TargetEndpoint name=\"default\"><HTTPTargetConnection><URL>" + targetUrl + "</URL></HTTPTargetConnection></TargetEndpoint>");
 
-        // API Proxy Manifest
+        // API Proxy Manifest (Includes Resources section)
         StringBuilder mb = new StringBuilder();
         for (String p : policyMap.keySet()) mb.append("        <Policy>").append(p).append("</Policy>\n");
+        
         Files.writeString(apiproxy.resolve(apiName + ".xml"), 
-            "<APIProxy name=\"" + apiName + "\">\n<Policies>\n" + mb + "    </Policies>\n" +
-            "<ProxyEndpoints><ProxyEndpoint>default</ProxyEndpoint></ProxyEndpoints>\n" +
-            "<TargetEndpoints><TargetEndpoint>default</TargetEndpoint></TargetEndpoints></APIProxy>");
+            "<APIProxy name=\"" + apiName + "\">\n" +
+            "    <Basepaths>/v1/" + apiName.toLowerCase() + "</Basepaths>\n" +
+            "    <Policies>\n" + mb + "    </Policies>\n" +
+            "    <ProxyEndpoints><ProxyEndpoint>default</ProxyEndpoint></ProxyEndpoints>\n" +
+            "    <TargetEndpoints><TargetEndpoint>default</TargetEndpoint></TargetEndpoints>\n" +
+            "    <Resources>\n" +
+            "        <Resource>oas://" + oasFileName + "</Resource>\n" +
+            "    </Resources>\n" +
+            "</APIProxy>");
 
         return zipBundle(tempDir, apiproxy, apiName);
+    }
+
+    private File zipBundle(Path tempDir, Path apiproxy, String apiName) throws IOException {
+        File zipFile = new File(apiName + ".zip");
+        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
+            Files.walk(apiproxy).filter(p -> !Files.isDirectory(p)).forEach(p -> {
+                try {
+                    // Replace backslashes with forward slashes for ZIP compatibility
+                    String zipPath = tempDir.relativize(p).toString().replace("\\", "/");
+                    zos.putNextEntry(new ZipEntry(zipPath));
+                    Files.copy(p, zos);
+                    zos.closeEntry();
+                } catch (IOException e) { }
+            });
+        }
+        return zipFile;
     }
 
     private String extractTargetUrl(String xml, String wsdl) {
@@ -157,29 +146,4 @@ public class ApigeeTransformer {
         Matcher m = p.matcher(xml);
         return m.find() ? m.group(1).trim() : def;
     }
-
-    private File zipBundle(Path tempDir, Path apiproxy, String apiName) throws IOException {
-        File zipFile = new File(apiName + ".zip");
-        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
-            Files.walk(apiproxy).filter(p -> !Files.isDirectory(p)).forEach(p -> {
-                try {
-                    zos.putNextEntry(new ZipEntry(tempDir.relativize(p).toString().replace("\\", "/")));
-                    Files.copy(p, zos);
-                    zos.closeEntry();
-                } catch (IOException e) { }
-            });
-        }
-        return zipFile;
-    }
 }
-
-///////////////////////////
-
-
-$env:AKANA_HOST="https://akana.corporate.com"
-$env:AKANA_DOMAIN="Standard-Ldap"
-$env:AKANA_USERNAME="admin"
-$env:AKANA_PASSWORD="secure_password"
-$env:API_ID="generation-and-delivery-corpoarte-lending"
-
-java -cp ".;bin;lib/*" com.migration.MigratorAPP
