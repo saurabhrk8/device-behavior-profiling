@@ -1,135 +1,196 @@
-# Apigee API Onboarding – Design Overview
-
-## 1. Project Description
-
-We are designing a standardized and automated API onboarding framework for Apigee to streamline how Business Units (BU) publish and manage APIs.
-
-The goal is to enable BU developers to onboard APIs by simply committing configuration and OpenAPI Specifications (OAS) into their repository, while the platform handles validation, packaging, and deployment through centralized pipelines.
-
-### High-Level Flow
-
-1. BU developer commits API configuration (YAML) and OAS into BU repository
-2. BU pipeline is triggered:
-
-   * Validates configuration
-   * Triggers central pipeline
-3. Central pipeline:
-
-   * Fetches configuration and OAS from BU repo
-   * Copies assets into GitLab workspace
-   * Builds Apigee proxy bundle (zip structure)
-   * Uploads artifact to Nexus
-   * Runs linting and validation checks
-   * Deploys to Apigee upon successful validation
+# Agentic AI – Tools & Use Cases (Simple & Engaging Presentation)
 
 ---
 
-## 2. Design Decision
+## Slide 1: Title Slide
 
-We are evaluating two approaches for building the Apigee bundle:
+**Agentic AI – Tools & Use Cases**
 
-### Option 1: YAML-Driven Modular Logic
+* Your Name
+* Date
 
-All logic (structure, transformations, and build steps) is defined within YAML configuration files.
-
-### Option 2: Python-Based Build Script
-
-Use external Python scripts to process configuration and generate the Apigee bundle.
+👉 Image idea: Robot with toolbox 🧰🤖
 
 ---
 
-## 3. Option Comparison
+## Slide 2: Quick Recap (30 sec)
 
-### 🔹 Option 1: YAML-Based Modular Approach
+* Agentic AI = Think + Plan + Act
+* Works towards a goal
 
-#### Description
-
-* Logic embedded within YAML files
-* Uses templates and structured configuration
-* Pipeline interprets YAML to generate bundle
-
-#### Pros
-
-* ✅ Simpler setup (no additional runtime dependencies)
-* ✅ Easy for DevOps/pipeline teams to maintain
-* ✅ Configuration-driven (less code to manage)
-* ✅ Faster onboarding for simple use cases
-* ✅ Easier to version and review in Git
-
-#### Cons
-
-* ❌ Limited flexibility for complex logic
-* ❌ Harder to debug when logic grows
-* ❌ YAML can become complex and difficult to maintain
-* ❌ Limited reusability of logic
-* ❌ Not ideal for advanced transformations
+👉 Say: “Last time we saw how it works, today we see what tools it uses and where we use it.”
 
 ---
 
-### 🔹 Option 2: Python Script-Based Approach
+## Slide 3: What are Agentic AI Tools?
 
-#### Description
+* Tools = What AI uses to do work
 
-* YAML used only for configuration
-* Python scripts handle logic, transformations, and bundle generation
+👉 Simple line:
+**“Tools are the hands of the AI”**
 
-#### Pros
-
-* ✅ High flexibility and extensibility
-* ✅ Better handling of complex logic and transformations
-* ✅ Easier debugging and testing
-* ✅ Reusable modules and functions
-* ✅ Cleaner separation of config vs logic
-
-#### Cons
-
-* ❌ Additional dependency (Python runtime)
-* ❌ Slightly higher setup and maintenance effort
-* ❌ Requires development skills (not just config changes)
-* ❌ Versioning and testing of scripts needed
+👉 Image: Robot with multiple arms/tools
 
 ---
 
-## 4. Key Considerations
+## Slide 4: Types of Tools (Simple)
 
-| Area                | YAML Approach                | Python Approach |
-| ------------------- | ---------------------------- | --------------- |
-| Complexity Handling | Low                          | High            |
-| Flexibility         | Limited                      | High            |
-| Maintainability     | Medium (declines with scale) | High            |
-| Debugging           | Difficult                    | Easier          |
-| Scalability         | Limited                      | Strong          |
-| Setup Effort        | Low                          | Medium          |
-| Reusability         | Low                          | High            |
+* APIs → talk to systems
+* Databases → get/save data
+* Messaging → send alerts (Teams/Slack)
+* Files → read/write data
+
+👉 Image: Toolbox with labels
 
 ---
 
-## 5. Recommendation
+## Slide 5: Example (Simple Flow)
 
-For enterprise-scale API onboarding, a **hybrid approach is recommended**:
+“Check system health”
 
-* Use **YAML for configuration (input from BU teams)**
-* Use **Python scripts for processing and bundle generation**
+* AI reads logs
+* Calls API
+* Sends alert
 
-### Why Hybrid?
+👉 Say: “AI is not magic—it just uses tools smartly.”
 
-* Keeps BU interaction simple (config-driven)
-* Enables platform team to implement robust, reusable logic
-* Scales better for future enhancements
-* Supports complex transformations and validations
+👉 Image: Simple arrows diagram
 
 ---
 
-## 6. Future Enhancements
+## Slide 6: Popular Agentic AI Tools (High Level)
 
-* Standardized templates for API types
-* Plugin-based architecture for extensibility
-* Advanced validation rules (security, governance)
-* Observability and logging improvements
-* Self-service onboarding portal
+* LangChain
+* AutoGen
+* CrewAI
+* OpenAI Assistants
+
+👉 Keep it light (no deep tech)
+👉 Say: “These frameworks help build agents faster”
+
+👉 Image: Logos or simple icons
 
 ---
 
-## 7. Summary
+## Slide 7: Real Use Case 1 (Office)
 
-This design enables a scalable, automated, and governed API onboarding process on Apigee. While YAML-based approaches offer simplicity, Python-based processing provides the flexibility and robustness required for enterprise use cases. A hybrid model ensures the best balance between usability and extensibility.
+**IT Support Agent**
+
+* Detects issue
+* Creates ticket
+* Notifies team
+
+👉 Image: Robot fixing laptop 💻
+
+---
+
+## Slide 8: Real Use Case 2
+
+**API Onboarding Automation (Your Context)**
+
+* Reads config
+* Validates
+* Builds bundle
+* Deploys
+
+👉 Say: “Exactly what we are building!”
+
+👉 Image: Pipeline diagram
+
+---
+
+## Slide 9: Real Use Case 3
+
+**Monitoring & Alerts**
+
+* Watches logs
+* Detects anomaly
+* Sends alert
+
+👉 Image: Alert bell 🔔 with robot
+
+---
+
+## Slide 10: Fun Use Case
+
+**Personal Assistant Agent**
+
+* Books tickets
+* Sends reminders
+* Plans trips
+
+👉 Funny image: Robot on vacation 😎
+
+---
+
+## Slide 11: Business Benefits
+
+* Saves time ⏱️
+* Reduces manual work
+* Faster decisions
+* 24/7 automation
+
+👉 Image: Human relaxing while robot works 😄
+
+---
+
+## Slide 12: Challenges
+
+* Wrong decisions
+* Over-automation risk
+* Security concerns
+
+👉 Image: Funny robot mistake meme
+
+---
+
+## Slide 13: Best Practice
+
+* Use limited tools
+* Add approval steps
+* Monitor actions
+
+👉 Say: “Control is important”
+
+👉 Image: Referee image ⚽
+
+---
+
+## Slide 14: Where We Can Use It (Your Org)
+
+* API onboarding
+* DevOps automation
+* Monitoring
+* Support workflows
+
+👉 Make it interactive: ask team ideas
+
+---
+
+## Slide 15: Key Takeaway
+
+**“Agentic AI uses tools to turn decisions into actions.”**
+
+---
+
+## Slide 16: Closing
+
+* Thank you
+* Questions?
+
+👉 Funny image: Robot asking “All good?”
+
+---
+
+## 🎤 Speaker Tips
+
+* Keep it simple
+* Use examples
+* Add humor
+* Ask questions
+
+---
+
+## 🔹 One-line Summary
+
+“Agentic AI becomes powerful when it connects to tools
