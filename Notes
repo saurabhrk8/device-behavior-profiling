@@ -1,149 +1,135 @@
-package com.migration;
+# Apigee API Onboarding – Design Overview
 
-import java.io.*;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
-import java.util.*;
-import java.util.regex.*;
-import java.util.zip.*;
+## 1. Project Description
 
-public class ApigeeTransformer {
+We are designing a standardized and automated API onboarding framework for Apigee to streamline how Business Units (BU) publish and manage APIs.
 
-    public File transform(byte[] binContent, String apiId) throws Exception {
-        String objectXml = "";
-        String wsdlContent = "";
-        
-        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(binContent))) {
-            ZipEntry entry;
-            while ((entry = zis.getNextEntry()) != null) {
-                byte[] bytes = zis.readAllBytes();
-                String name = entry.getName().toLowerCase();
-                if (name.contains("objectdata.xml")) {
-                    objectXml = new String(bytes, StandardCharsets.UTF_8);
-                } else if (name.endsWith(".wsdl")) {
-                    wsdlContent = new String(bytes, StandardCharsets.UTF_8);
-                }
-            }
-        }
+The goal is to enable BU developers to onboard APIs by simply committing configuration and OpenAPI Specifications (OAS) into their repository, while the platform handles validation, packaging, and deployment through centralized pipelines.
 
-        String apiName = extractValue(objectXml, "Name", "API-" + apiId).replaceAll("[^a-zA-Z0-9-]", "-");
-        String targetUrl = extractTargetUrl(objectXml, wsdlContent);
-        String oasYaml = generateOasYaml(apiName, wsdlContent, targetUrl);
+### High-Level Flow
 
-        return createApigeeBundle(apiName, targetUrl, oasYaml);
-    }
+1. BU developer commits API configuration (YAML) and OAS into BU repository
+2. BU pipeline is triggered:
 
-    private String generateOasYaml(String name, String wsdl, String url) {
-        StringBuilder yaml = new StringBuilder();
-        yaml.append("openapi: 3.0.0\n");
-        yaml.append("info:\n  title: ").append(name).append("\n  version: 1.0.0\n");
-        yaml.append("servers:\n  - url: /v1/").append(name.toLowerCase()).append("\n");
-        yaml.append("paths:\n  /:\n    post:\n      summary: SOAP Gateway Operation\n");
-        yaml.append("      responses:\n        '200':\n          description: Successful response\n");
-        
-        Matcher m = Pattern.compile("operation name=\"(.*?)\"").matcher(wsdl);
-        yaml.append("      x-soap-operations:\n");
-        while (m.find()) {
-            yaml.append("        - ").append(m.group(1)).append("\n");
-        }
-        return yaml.toString();
-    }
+   * Validates configuration
+   * Triggers central pipeline
+3. Central pipeline:
 
-    private File createApigeeBundle(String apiName, String targetUrl, String oasYaml) throws IOException {
-        Path tempDir = Files.createTempDirectory("apigee_bundle_v4_");
-        Path apiproxy = Files.createDirectories(tempDir.resolve("apiproxy"));
-        
-        // --- NEW: Correct Apigee Resource Structure ---
-        // Path: apiproxy/resources/oas/filename.yaml
-        Path oasDir = Files.createDirectories(apiproxy.resolve("resources").resolve("oas"));
-        String oasFileName = apiName + "-oas.yaml";
-        Files.writeString(oasDir.resolve(oasFileName), oasYaml);
+   * Fetches configuration and OAS from BU repo
+   * Copies assets into GitLab workspace
+   * Builds Apigee proxy bundle (zip structure)
+   * Uploads artifact to Nexus
+   * Runs linting and validation checks
+   * Deploys to Apigee upon successful validation
 
-        // Standard directories
-        Path polDir = Files.createDirectories(apiproxy.resolve("policies"));
-        Path proxDir = Files.createDirectories(apiproxy.resolve("proxies"));
-        Path targDir = Files.createDirectories(apiproxy.resolve("targets"));
+---
 
-        Map<String, String> policyMap = new LinkedHashMap<>();
+## 2. Design Decision
 
-        // 1. OAS Validation (Correctly referencing the resource)
-        policyMap.put("OAS-Validation-1", 
-            "<OASValidation name=\"OAS-Validation-1\">\n" +
-            "    <OASResource>oas://" + oasFileName + "</OASResource>\n" +
-            "</OASValidation>");
+We are evaluating two approaches for building the Apigee bundle:
 
-        // 2. XMLtoJSON (XSD Fix: Options Only)
-        policyMap.put("XMLtoJSON-1", 
-            "<XMLToJSON name=\"XMLtoJSON-1\">\n" +
-            "    <Source>response</Source>\n" +
-            "    <Options><RecognizeNumber>true</RecognizeNumber></Options>\n" +
-            "</XMLToJSON>");
+### Option 1: YAML-Driven Modular Logic
 
-        // 3. SpikeArrest
-        policyMap.put("SpikeArrest-1", "<SpikeArrest name=\"SpikeArrest-1\"><Rate>10ps</Rate></SpikeArrest>");
+All logic (structure, transformations, and build steps) is defined within YAML configuration files.
 
-        for (Map.Entry<String, String> entry : policyMap.entrySet()) {
-            Files.writeString(polDir.resolve(entry.getKey() + ".xml"), "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + entry.getValue());
-        }
+### Option 2: Python-Based Build Script
 
-        // Proxy Endpoint
-        Files.writeString(proxDir.resolve("default.xml"), 
-            "<ProxyEndpoint name=\"default\">\n<PreFlow><Request>\n" +
-            "    <Step><Name>SpikeArrest-1</Name></Step>\n" +
-            "    <Step><Name>OAS-Validation-1</Name></Step>\n" +
-            "</Request>\n<Response><Step><Name>XMLtoJSON-1</Name></Step></Response></PreFlow>\n" +
-            "<HTTPProxyConnection><BasePath>/v1/" + apiName.toLowerCase() + "</BasePath></HTTPProxyConnection>\n" +
-            "<RouteRule name=\"default\"><TargetEndpoint>default</TargetEndpoint></RouteRule></ProxyEndpoint>");
+Use external Python scripts to process configuration and generate the Apigee bundle.
 
-        // Target Endpoint
-        Files.writeString(targDir.resolve("default.xml"), 
-            "<TargetEndpoint name=\"default\"><HTTPTargetConnection><URL>" + targetUrl + "</URL></HTTPTargetConnection></TargetEndpoint>");
+---
 
-        // API Proxy Manifest (Includes Resources section)
-        StringBuilder mb = new StringBuilder();
-        for (String p : policyMap.keySet()) mb.append("        <Policy>").append(p).append("</Policy>\n");
-        
-        Files.writeString(apiproxy.resolve(apiName + ".xml"), 
-            "<APIProxy name=\"" + apiName + "\">\n" +
-            "    <Basepaths>/v1/" + apiName.toLowerCase() + "</Basepaths>\n" +
-            "    <Policies>\n" + mb + "    </Policies>\n" +
-            "    <ProxyEndpoints><ProxyEndpoint>default</ProxyEndpoint></ProxyEndpoints>\n" +
-            "    <TargetEndpoints><TargetEndpoint>default</TargetEndpoint></TargetEndpoints>\n" +
-            "    <Resources>\n" +
-            "        <Resource>oas://" + oasFileName + "</Resource>\n" +
-            "    </Resources>\n" +
-            "</APIProxy>");
+## 3. Option Comparison
 
-        return zipBundle(tempDir, apiproxy, apiName);
-    }
+### 🔹 Option 1: YAML-Based Modular Approach
 
-    private File zipBundle(Path tempDir, Path apiproxy, String apiName) throws IOException {
-        File zipFile = new File(apiName + ".zip");
-        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
-            Files.walk(apiproxy).filter(p -> !Files.isDirectory(p)).forEach(p -> {
-                try {
-                    // Replace backslashes with forward slashes for ZIP compatibility
-                    String zipPath = tempDir.relativize(p).toString().replace("\\", "/");
-                    zos.putNextEntry(new ZipEntry(zipPath));
-                    Files.copy(p, zos);
-                    zos.closeEntry();
-                } catch (IOException e) { }
-            });
-        }
-        return zipFile;
-    }
+#### Description
 
-    private String extractTargetUrl(String xml, String wsdl) {
-        List<String> urls = new ArrayList<>();
-        Matcher m = Pattern.compile(">(https?://[^<]+)<").matcher(xml);
-        while (m.find()) { urls.add(m.group(1).trim()); }
-        for (String url : urls) { if (url.toLowerCase().contains("bap")) return url; }
-        return urls.isEmpty() ? "https://mocktarget.apigee.net" : urls.get(0);
-    }
+* Logic embedded within YAML files
+* Uses templates and structured configuration
+* Pipeline interprets YAML to generate bundle
 
-    private String extractValue(String xml, String tag, String def) {
-        Pattern p = Pattern.compile("<(?:\\w+:)??" + tag + ">(.*?)</", Pattern.DOTALL);
-        Matcher m = p.matcher(xml);
-        return m.find() ? m.group(1).trim() : def;
-    }
-}
+#### Pros
+
+* ✅ Simpler setup (no additional runtime dependencies)
+* ✅ Easy for DevOps/pipeline teams to maintain
+* ✅ Configuration-driven (less code to manage)
+* ✅ Faster onboarding for simple use cases
+* ✅ Easier to version and review in Git
+
+#### Cons
+
+* ❌ Limited flexibility for complex logic
+* ❌ Harder to debug when logic grows
+* ❌ YAML can become complex and difficult to maintain
+* ❌ Limited reusability of logic
+* ❌ Not ideal for advanced transformations
+
+---
+
+### 🔹 Option 2: Python Script-Based Approach
+
+#### Description
+
+* YAML used only for configuration
+* Python scripts handle logic, transformations, and bundle generation
+
+#### Pros
+
+* ✅ High flexibility and extensibility
+* ✅ Better handling of complex logic and transformations
+* ✅ Easier debugging and testing
+* ✅ Reusable modules and functions
+* ✅ Cleaner separation of config vs logic
+
+#### Cons
+
+* ❌ Additional dependency (Python runtime)
+* ❌ Slightly higher setup and maintenance effort
+* ❌ Requires development skills (not just config changes)
+* ❌ Versioning and testing of scripts needed
+
+---
+
+## 4. Key Considerations
+
+| Area                | YAML Approach                | Python Approach |
+| ------------------- | ---------------------------- | --------------- |
+| Complexity Handling | Low                          | High            |
+| Flexibility         | Limited                      | High            |
+| Maintainability     | Medium (declines with scale) | High            |
+| Debugging           | Difficult                    | Easier          |
+| Scalability         | Limited                      | Strong          |
+| Setup Effort        | Low                          | Medium          |
+| Reusability         | Low                          | High            |
+
+---
+
+## 5. Recommendation
+
+For enterprise-scale API onboarding, a **hybrid approach is recommended**:
+
+* Use **YAML for configuration (input from BU teams)**
+* Use **Python scripts for processing and bundle generation**
+
+### Why Hybrid?
+
+* Keeps BU interaction simple (config-driven)
+* Enables platform team to implement robust, reusable logic
+* Scales better for future enhancements
+* Supports complex transformations and validations
+
+---
+
+## 6. Future Enhancements
+
+* Standardized templates for API types
+* Plugin-based architecture for extensibility
+* Advanced validation rules (security, governance)
+* Observability and logging improvements
+* Self-service onboarding portal
+
+---
+
+## 7. Summary
+
+This design enables a scalable, automated, and governed API onboarding process on Apigee. While YAML-based approaches offer simplicity, Python-based processing provides the flexibility and robustness required for enterprise use cases. A hybrid model ensures the best balance between usability and extensibility.
