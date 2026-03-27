@@ -1,16 +1,21 @@
-Hi [Lead’s Name],
+For Automated Routing, can we configure 'Fallback Chains' based on real-time health checks? For example, if OpenAI has a 500 error, can the Gateway automatically re-route that specific payload to an equivalent Anthropic model without the client knowing?
 
-Thanks for your message—happy to provide more context on my feedback.
 
-During the PoC phase, our primary focus was on proving the CI/CD-based onboarding flow using Apigee, which we executed well. However, in a few areas we could have explored alternative approaches alongside the core implementation:
+"Can we implement 'Cost-Based Routing' where a request is routed to a smaller model (like GPT-4o-mini) if the prompt is simple, but upgraded to a flagship model only if the complexity or 'intent' warrants it?"
 
-* For API onboarding, we mainly followed the standard CI/CD pipeline approach, but we could have evaluated more autonomous or semi-automated options (e.g., agent-based workflows) to reduce manual intervention.
-* We focused on validating the current architecture, but didn’t fully explore whether a more flexible or scalable pattern could better align with future product and design roadmap needs.
-* There was limited exploration of emerging approaches (e.g., AI-driven or agentic solutions) which, while not fitting perfectly into our current structure, could offer efficiency gains worth assessing early.
+Why ask: This is a major "FinOps" win for a solution architect.
 
-My suggestion is not to deviate from the PoC goal, but to allocate some space during such phases to evaluate innovative or alternative patterns that could influence longer-term direction.
+Questions on Prompt Management & Decorators
+This is where you enforce "Guardrails" and "Company Standards" globally.
 
-Happy to discuss this further.
+"In the Prompt Decorator plugin, can we enforce 'System Prompts' at the Gateway level that the developer cannot override? Specifically, for our Fraud domain, can we inject a hidden 'PII Redaction' instruction into every outbound request?"
 
-Thanks,
-[Your Name]
+Why ask: This ensures developers don't accidentally send sensitive bank data to an LLM.
+
+"With Prompt Templates, how do we handle versioning? If we update a global 'Legal Compliance' template in Kong, is there a way to canary-test that new template version before it rolls out to all consuming applications?"
+
+Why ask: It treats prompts like code (GitOps), which is vital for a Lead Architect.
+
+"How does the Gateway handle 'Prompt Injection' protection when using these templates? Does it sanitize the user-provided variables before they are merged into the final LLM payload?"
+
+Why ask: Security is the #1 concern for banks using AI.
