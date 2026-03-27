@@ -1,21 +1,23 @@
-For Automated Routing, can we configure 'Fallback Chains' based on real-time health checks? For example, if OpenAI has a 500 error, can the Gateway automatically re-route that specific payload to an equivalent Anthropic model without the client knowing?
+While Apigee focuses on the bundle, Kong focuses on the lifecycle as a plugin. To leverage an Agentic Solution to automate your specific workflow, you can ask questions that target the "bottlenecks" in your current pipeline (like manual linting or complex config mapping).
 
+Here are four high-impact technical questions tailored to your project:
 
-"Can we implement 'Cost-Based Routing' where a request is routed to a smaller model (like GPT-4o-mini) if the prompt is simple, but upgraded to a flagship model only if the complexity or 'intent' warrants it?"
+1. On "Agentic" Proxy Generation
+Your current process manually builds an Apigee bundle. Kong’s AI Gateway can theoretically "reason" about an OAS spec to generate its own configuration.
 
-Why ask: This is a major "FinOps" win for a solution architect.
+Question: "Our current pipeline manually maps input parameters to create Apigee bundles. Does Kong's AI Gateway offer an Agentic 'Spec-to-Plugin' capability where an LLM can analyze an OpenAPI Spec and automatically recommend or generate the necessary AI-Proxy or Prompt Decorator configurations, effectively replacing our custom build scripts?"
 
-Questions on Prompt Management & Decorators
-This is where you enforce "Guardrails" and "Company Standards" globally.
+2. On Automated Validation & Linting
+You currently perform lint validation in your target pipeline.
 
-"In the Prompt Decorator plugin, can we enforce 'System Prompts' at the Gateway level that the developer cannot override? Specifically, for our Fraud domain, can we inject a hidden 'PII Redaction' instruction into every outbound request?"
+Question: "We use standard linting for our Apigee bundles. Can Kong's AI Prompt Guard or Semantic Guard be leveraged during the CI/CD phase to perform 'Cognitive Linting'? Specifically, can it analyze the intent of the API being onboarded and automatically flag if the security policies or prompt templates don't align with our banking 'High Risk' compliance standards?"
 
-Why ask: This ensures developers don't accidentally send sensitive bank data to an LLM.
+3. On "Universal Interface" vs. Target Bundles
+Apigee requires a new "Proxy" for every endpoint. Kong's "Universal Interface" implies one point for many models.
 
-"With Prompt Templates, how do we handle versioning? If we update a global 'Legal Compliance' template in Kong, is there a way to canary-test that new template version before it rolls out to all consuming applications?"
+Question: "If we move to a 'Universal Interface' model, how does that impact the CI/CD onboarding flow? Instead of deploying a unique bundle for every API (like we do in Apigee), can we use Semantic Routing to onboard new 'routes' via metadata updates to a single persistent AI Gateway, and how does that trigger the underlying GitLab CI/CD?"
 
-Why ask: It treats prompts like code (GitOps), which is vital for a Lead Architect.
+4. On Automating "Prompt Decoration" for Developers
+You currently capture OAS and API names in your UI.
 
-"How does the Gateway handle 'Prompt Injection' protection when using these templates? Does it sanitize the user-provided variables before they are merged into the final LLM payload?"
-
-Why ask: Security is the #1 concern for banks using AI.
+Question: "We capture user details via a frontend (Backstage). Can we use the AI Prompt Decorator to automatically 'inject' bank-standard system prompts (like PII redaction or audit headers) globally at the Gateway level? This would allow us to simplify our onboarding UI by removing the need for developers to manually define these security parameters in their input config."
