@@ -1,3 +1,7 @@
+The current API onboarding process, while automated, still requires manual input, structured knowledge, and adherence to standards from developers.
+Users need to understand Apigee requirements, metadata standards, and repository structures, which can slow onboarding and introduce inconsistencies.
+There is a gap between developer intent and platform implementation, leading to rework, validation failures, and longer onboarding cycles.
+
 Proposed Solution (Agentic Approach)
 Introduce an AI-powered onboarding assistant (agent) integrated into the UI (e.g., Backstage or portal).
 Instead of filling static forms, users interact conversationally or via guided prompts.
