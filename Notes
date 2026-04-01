@@ -1,3 +1,51 @@
-The POC was completed successfully, supported by effective teamwork and good coordination, particularly between Faraz, Kamlesh, Gaurav, Naresh, and Saurabh. Communication and support within the team were strong throughout the sprint.
+Proposed Solution (Agentic Approach)
+Introduce an AI-powered onboarding assistant (agent) integrated into the UI (e.g., Backstage or portal).
+Instead of filling static forms, users interact conversationally or via guided prompts.
+The agent:
+Collects API requirements (name, endpoint, purpose, security, etc.)
+Interprets or generates OAS (if not provided)
+Automatically structures metadata
+The agent then:
+Creates GitLab branches/files via API
+Triggers pipelines
+Monitors progress and provides feedback to users
+Optionally, it can suggest improvements (naming, policies, security standards).
+🤖 How Agentic / GenAI Solves the Problem
+Reduces cognitive load: Developers don’t need deep knowledge of Apigee or internal standards
+Automates interpretation: Converts natural language → structured API definitions (OAS, metadata)
+Improves quality: Built-in validation, suggestions, and policy recommendations
+Closes feedback loop: Agent can explain pipeline failures and suggest fixes
+Leverages GitLab Duo:
+Code/OAS generation
+Pipeline insights
+Inline suggestions and automation
+🎯 Does it Solve Business / Technology Problems?
+Business Value
+Faster API onboarding → reduced time-to-market
+Improved developer experience → higher adoption across teams
+Reduced rework → cost and effort savings
+Technology Value
+Standardised API definitions and policies
+Reduced validation errors and pipeline failures
+Scalable onboarding model across multiple teams
+Better integration with existing GitLab + CI/CD ecosystem
 
-From a personal perspective, the sprint felt very fast-paced, and it seemed like the last retrospective was just a few days ago. Improving time management and maintaining clearer visibility on sprint goals and progress could help ensure better planning and execution.
+
+/////////////
+
+Hi Team,
+
+I hope you are doing well.
+
+I wanted to share an idea for evolving our current API onboarding automation solution by introducing an agentic (GenAI-driven) approach, leveraging GitLab Duo capabilities available within our environment.
+
+At a high level, instead of relying solely on form-based inputs, we could introduce an AI-powered assistant that interacts with users to capture API requirements, generate or validate OAS specifications, and automate repository and pipeline actions. This could help reduce manual effort, improve standardisation, and enhance the overall developer experience.
+
+I believe this approach could complement our existing design by improving onboarding speed, reducing validation issues, and making the process more intuitive for teams across the bank.
+
+I’ve outlined a high-level concept covering the problem statement, proposed solution, and potential benefits. I would really appreciate your feedback and thoughts on whether this is something we could explore further.
+
+Happy to discuss this in more detail.
+
+Thanks,
+Saurabh
