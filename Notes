@@ -34,7 +34,15 @@ Reduced validation errors and pipeline failures
 Scalable onboarding model across multiple teams
 Better integration with existing GitLab + CI/CD ecosystem
 
-
+Business Value
+Faster API onboarding → reduced time-to-market
+Improved developer experience → higher adoption across teams
+Reduced rework → cost and effort savings
+Technology Value
+Standardised API definitions and policies
+Reduced validation errors and pipeline failures
+Scalable onboarding model across multiple teams
+Better integration with existing GitLab + CI/CD ecosystem
 /////////////
 
 Hi Team,
