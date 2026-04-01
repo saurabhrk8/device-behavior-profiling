@@ -1,23 +1,3 @@
-While Apigee focuses on the bundle, Kong focuses on the lifecycle as a plugin. To leverage an Agentic Solution to automate your specific workflow, you can ask questions that target the "bottlenecks" in your current pipeline (like manual linting or complex config mapping).
+The POC was completed successfully, supported by effective teamwork and good coordination, particularly between Faraz, Kamlesh, Gaurav, Naresh, and Saurabh. Communication and support within the team were strong throughout the sprint.
 
-Here are four high-impact technical questions tailored to your project:
-
-1. On "Agentic" Proxy Generation
-Your current process manually builds an Apigee bundle. Kong’s AI Gateway can theoretically "reason" about an OAS spec to generate its own configuration.
-
-Question: "Our current pipeline manually maps input parameters to create Apigee bundles. Does Kong's AI Gateway offer an Agentic 'Spec-to-Plugin' capability where an LLM can analyze an OpenAPI Spec and automatically recommend or generate the necessary AI-Proxy or Prompt Decorator configurations, effectively replacing our custom build scripts?"
-
-2. On Automated Validation & Linting
-You currently perform lint validation in your target pipeline.
-
-Question: "We use standard linting for our Apigee bundles. Can Kong's AI Prompt Guard or Semantic Guard be leveraged during the CI/CD phase to perform 'Cognitive Linting'? Specifically, can it analyze the intent of the API being onboarded and automatically flag if the security policies or prompt templates don't align with our banking 'High Risk' compliance standards?"
-
-3. On "Universal Interface" vs. Target Bundles
-Apigee requires a new "Proxy" for every endpoint. Kong's "Universal Interface" implies one point for many models.
-
-Question: "If we move to a 'Universal Interface' model, how does that impact the CI/CD onboarding flow? Instead of deploying a unique bundle for every API (like we do in Apigee), can we use Semantic Routing to onboard new 'routes' via metadata updates to a single persistent AI Gateway, and how does that trigger the underlying GitLab CI/CD?"
-
-4. On Automating "Prompt Decoration" for Developers
-You currently capture OAS and API names in your UI.
-
-Question: "We capture user details via a frontend (Backstage). Can we use the AI Prompt Decorator to automatically 'inject' bank-standard system prompts (like PII redaction or audit headers) globally at the Gateway level? This would allow us to simplify our onboarding UI by removing the need for developers to manually define these security parameters in their input config."
+From a personal perspective, the sprint felt very fast-paced, and it seemed like the last retrospective was just a few days ago. Improving time management and maintaining clearer visibility on sprint goals and progress could help ensure better planning and execution.
