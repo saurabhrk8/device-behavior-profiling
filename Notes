@@ -1,94 +1,10 @@
-import ApiForm from "./ApiForm";
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App from './App.jsx'   // 👈 make sure this is EXACT
+import './index.css'          // 👈 use your new CSS file
 
-function App() {
-  return (
-    <div style={{ padding: "20px", fontFamily: "Arial" }}>
-      <h1>Apigee API Onboarding</h1>
-      <ApiForm />
-    </div>
-  );
-}
-
-export default App;
-
-src/ApiForm.jsx
-
-import { useState } from "react";
-
-export default function ApiForm() {
-  const [formData, setFormData] = useState({
-    name: "",
-    displayName: "",
-    description: "",
-    basePath: "",
-    targetUrl: "",
-    targetDescription: "",
-    policy: "",
-    metadata: "",
-    oasFile: null,
-  });
-
-  const handleChange = (e) => {
-    const { name, value, files } = e.target;
-
-    if (name === "oasFile") {
-      setFormData({ ...formData, oasFile: files[0] });
-    } else {
-      setFormData({ ...formData, [name]: value });
-    }
-  };
-
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    console.log("Form Data:", formData);
-    alert("API submitted! Check console.");
-  };
-
-  return (
-    <form onSubmit={handleSubmit} style={{ maxWidth: "600px" }}>
-      
-      <h2>API Details</h2>
-
-      <input name="name" placeholder="API Name" onChange={handleChange} required />
-      <input name="displayName" placeholder="Display Name" onChange={handleChange} />
-      <textarea name="description" placeholder="Description" onChange={handleChange} />
-
-      <input name="basePath" placeholder="/v1/example" onChange={handleChange} />
-
-      <h2>Target Details</h2>
-
-      <input name="targetUrl" placeholder="https://backend.url" onChange={handleChange} />
-      <textarea name="targetDescription" placeholder="Target Description" onChange={handleChange} />
-
-      <h2>Policies</h2>
-
-      <input name="policy" placeholder="Policy Name" onChange={handleChange} />
-
-      <h2>Metadata</h2>
-
-      <textarea name="metadata" placeholder='{"key":"value"}' onChange={handleChange} />
-
-      <h2>Upload OAS File</h2>
-
-      <input type="file" name="oasFile" accept=".json,.yaml,.yml" onChange={handleChange} />
-
-      <br /><br />
-
-      <button type="submit">Submit API</button>
-    </form>
-  );
-}
-
-////CSS
-
-input, textarea {
-  display: block;
-  width: 100%;
-  margin: 10px 0;
-  padding: 8px;
-}
-
-button {
-  padding: 10px 15px;
-  cursor: pointer;
-}
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
+)
