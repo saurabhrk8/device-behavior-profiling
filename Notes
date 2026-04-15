@@ -1,1 +1,82 @@
-https://docs.cloud.google.com/apigee/docs/api-platform/develop/resource-files
+AI Powered Onboarding Agent​
+
+Problem ststment:
+
+The current API onboarding process, while automated, still requires manual input,
+structured knowledge, and adherence to standards from developers. Users need to
+understand Apigee requirements, metadata standards, and repository structures, which
+can slow onboarding and introduce inconsistencies. There is a gap between developer
+intent and platform implementation, leading to rework, validation failures, and longer
+onboarding cycles.​
+
+Prposed solution:
+
+Introduce an AI-powered onboarding assistant (agent) integrated into the UI (e.g.,
+Backstage or portal). Instead of filling static forms, users interact conversationally or via
+guided prompts.​
+
+​
+
+The agent:​
+
+Collects API requirements (name, endpoint, purpose, security, etc.)​
+
+Interprets or generates OAS (if not provided)​
+
+Automatically structures metadata​
+
+​
+
+The agent then:​
+
+Creates GitLab branches/files via API​
+
+Triggers pipelines​
+
+Monitors progress and provides feedback to users​
+
+Optionally, it can suggest improvements (naming, policies, security standards).​
+
+How AI helps:
+
+Reduces cognitive load: Developers don’t need deep knowledge of Apigee or internal standards​
+
+Automates interpretation: Converts natural language → structured API definitions (OAS, metadata)​
+
+Improves quality: Built-in validation, suggestions, and policy recommendations​
+
+Closes feedback loop: Agent can explain pipeline failures and suggest fixes​
+
+Leverages GitLab Duo:​
+
+Code/OAS generation​
+
+Pipeline insights​
+
+Inline suggestions and automation
+
+Business Value​
+
+​
+
+Faster API onboarding → reduced time-to-market​
+
+Improved developer experience → higher adoption across teams​
+
+Reduced rework → cost and effort savings​
+
+​
+
+​
+
+Technology Value​
+
+​
+
+Standardised API definitions and policies​
+
+Reduced validation errors and pipeline failures​
+
+Scalable onboarding model across multiple teams​
+
+Better integration with existing GitLab + CI/CD ecosystem​
