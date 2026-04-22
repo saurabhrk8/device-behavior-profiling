@@ -1,60 +1,25 @@
-Since you are dealing with a **Multi-Repo GitOps** setup (BU Repo vs. Central Repo), the branching strategy needs to be foolproof. Developers shouldn't have to worry about the "Central" repo; their world starts and ends in the **BU Repo**.
-
-Here is a concise, high-impact template you can copy directly into your **Confluence** page.
-
----
-
-## 🛠 Source Control & Branching Strategy
-
-To ensure a stable and secure API deployment to Apigee, we follow a **Feature-Branch Workflow**. This ensures that only validated, peer-reviewed code reaches our environments.
-
-### 1. The Branching Model
-We use three primary branch types in the **BU GitLab Repository**:
-
-* **`feature/*`**: Where all development happens. (e.g., `feature/add-logging-policy`)
-* **`develop`**: The integration branch for the **UAT/Test** environment.
-* **`main`**: The stable branch for **Production** deployment.
 
 
+**Role:** Act as an **Apigee API Platform Architect** and **DevOps Engineer** specializing in GitOps for highly regulated financial environments.
 
----
+**Context:**
+I am building a centralized API Onboarding Application to automate the creation and deployment of Apigee Proxies. The architecture uses two separate GitLab repositories:
+1. **BU Repo (Developer Zone):** Where the user checks in two files: `proxy.yml` (Configuration) and `.gitlab-ci.yml` (BU Pipeline).
+2. **Central Repo (Automation Zone):** Owned by the platform team. It contains the logic to Fetch from the BU repo, Build the Apigee ZIP bundle, Scan it (Lint/Policy checks), Publish it to Nexus, and Deploy it via Apigee APIs.
 
-### 2. Developer Workflow (Step-by-Step)
+**The Requirement:**
+I need a comprehensive technical strategy for **API Versioning and Promotion** within this specific framework.
 
-| Step | Action | Description |
-| :--- | :--- | :--- |
-| **1** | **Create Branch** | Create a `feature/your-api-name` branch from `develop`. |
-| **2** | **Commit Code** | Check in your API Proxy configurations and JSON config files. |
-| **3** | **Merge Request** | Open an **MR** to merge into `develop`. This requires at least one peer approval. |
-| **4** | **BU Pipeline** | **Automatic Trigger:** On commit, the BU Pipeline runs **Validation**. |
-| **5** | **Central Sync** | On successful validation, the Central Pipeline is triggered to build the **Apigee Bundle**. |
+**User Inputs in `proxy.yml` include:**
+* `api_name`, `description`, `base_path`, `target_url`, `OAS_link`.
+* `version` (The user currently provides this, but I need guidance on its use).
+* `nexus_url/group` (I need to know if this should be a user input or automated).
 
----
+**Questions to Answer:**
+1. **Versioning Strategy:** Define the difference between "Consumer Versioning" (Basepath) and "Implementation Versioning" (Nexus Artifact). How should each be managed in the pipeline?
+2. **Promotion Flow:** Explain the "Build Once, Deploy Many" process. How do we promote a validated ZIP from Nexus from a Dev environment to UAT and Production using the Two-Repo GitLab strategy?
+3. **Input Optimization:** Review the user inputs. Which fields should be removed from the user’s `proxy.yml` and handled by the Central Pipeline logic to ensure better governance?
+4. **Rollback Logic:** How does this versioning strategy enable a one-click rollback if a deployment fails in Production?
 
-### 3. Pipeline Triggers & Environments
-The destination environment in Apigee is determined by which branch you are merging into:
-
-* **Merge to `develop`** $\rightarrow$ Triggers Central Pipeline $\rightarrow$ Deploys to **Apigee Dev/UAT**.
-* **Merge to `main`** $\rightarrow$ Triggers Central Pipeline $\rightarrow$ Deploys to **Apigee Prod**.
-
-> [!IMPORTANT]
-> **Direct commits to `main` or `develop` are blocked.** All code must enter via a Merge Request (MR) to ensure the **Validate** stage of the BU Pipeline passes first.
-
----
-
-### 4. How to Read the Pipeline Status
-In your GitLab sidebar, monitor the **CI/CD > Pipelines** section:
-1.  **Stage: Validate** (BU Repo) - Checks your syntax.
-2.  **Stage: Trigger** (BU Repo) - Hands off the "baton" to the Central Team.
-3.  **Downstream Pipeline** - Click the "linked" icon to see the **Central Pipeline** stages (Build, Lint, Nexus Upload, and Deploy).
-
----
-
-### 💡 Quick Tips for Success
-* **Keep Bundles Small:** Only check in the specific API config files required.
-* **Linting Matters:** If the Central Pipeline fails at the **Lint** stage, check the logs for Apigee best-practice violations (e.g., missing FaultRules).
-* **Nexus is Truth:** Every successful deployment is archived in Nexus. If you need to rollback, we use the versioned ZIP from Nexus.
-
----
-
-**You have about 5 minutes until your call! This structure shows the client that you have strong "Governance" and "Developer Experience" (DX) in mind. Good luck!**
+**Output Format:**
+Please provide a structured technical recommendation with a **Table** for the promotion lifecycle and a **Sample YAML Schema** for the optimized `proxy.yml` file.
