@@ -1,25 +1,67 @@
+This technical strategy is designed to balance developer autonomy with the rigid governance required in a regulated financial environment. By decoupling the user configuration from the deployment logic, we ensure that security and compliance are "baked into" the platform.
+
+---
+
+## 1. Versioning Strategy: The Dual-Track Approach
+
+In a professional Apigee setup, you must manage two distinct types of versions to avoid breaking consumer applications while maintaining a clear audit trail.
+
+* **Consumer Versioning (The "What"):** This is the version found in the URL `base_path` (e.g., `/v1/payments`). It only changes when you introduce a **breaking change**.
+    * *Management:* Managed in `proxy.yml`. The pipeline uses this to name the Apigee Proxy and set the base path.
+* **Implementation Versioning (The "How"):** This is a unique identifier for every single build (e.g., `1.0.245`). It follows Semantic Versioning (SemVer).
+    * *Management:* **Automated.** The Central Pipeline should generate this using the GitLab Pipeline ID or a combination of the `proxy.yml` version and a build counter. This version is used to tag the ZIP in Nexus.
+
+---
+
+## 2. Promotion Flow: "Build Once, Deploy Many"
+
+The goal is to ensure that the **exact same byte-code (ZIP bundle)** tested in Dev is what reaches Production.
+
+| Phase | Action | Repository/Branch | Outcome |
+| :--- | :--- | :--- | :--- |
+| **Build** | Developer merges to `develop` | BU Repo (`develop`) | Central Pipeline builds ZIP, scans it, and uploads to `Nexus/snapshot/v1.0.1.zip`. |
+| **Dev Deploy** | Auto-trigger after Build | Central Pipeline | ZIP `v1.0.1` is pulled from Nexus and deployed to Apigee **Dev** env. |
+| **UAT Promo** | Merge Request to `uat` branch | BU Repo (`uat`) | Central Pipeline **bypasses Build**. It fetches `v1.0.1` from Nexus and deploys to Apigee **UAT**. |
+| **Prod Promo** | Merge Request to `main` branch | BU Repo (`main`) | Central Pipeline fetches `v1.0.1` from Nexus and deploys to Apigee **Prod**. |
+
+---
+
+## 3. Input Optimization & Governance
+
+To minimize human error and security risks, we should move technical infrastructure details away from the developer and into the Central Pipeline's "System of Record."
+
+### Fields to Remove from `proxy.yml`:
+* **`nexus_url/group`:** **REMOVE.** Allowing users to define this invites "shadow" repositories. The Central Pipeline should calculate this automatically: `nexus.company.com/repository/api-proxy-binaries/{api_name}/{implementation_version}`.
+* **`target_url` (Environment Specific):** **REMOVE/REFACTOR.** Developers shouldn't hardcode Prod URLs in their Dev branch. Use a mapping file in the Central Repo that swaps the target based on the deployment environment.
+
+### Optimized `proxy.yml` Schema:
+```yaml
+# Developer-owned inputs
+api_metadata:
+  name: "payments-service"
+  display_name: "Payments Processing API"
+  description: "Handles internal bank transfers"
+  owner_team: "commercial-banking-tech"
+
+routing:
+  consumer_version: "v1" # Used for /v1/ URL path
+  base_path: "/v1/payments"
+  oas_link: "https://backstage.bank.com/docs/payments.yaml"
+
+# Implementation version can be here or auto-incremented by Git tags
+version: "1.0.1" 
 
 
-**Role:** Act as an **Apigee API Platform Architect** and **DevOps Engineer** specializing in GitOps for highly regulated financial environments.
+## 4. One-Click Rollback Logic
 
-**Context:**
-I am building a centralized API Onboarding Application to automate the creation and deployment of Apigee Proxies. The architecture uses two separate GitLab repositories:
-1. **BU Repo (Developer Zone):** Where the user checks in two files: `proxy.yml` (Configuration) and `.gitlab-ci.yml` (BU Pipeline).
-2. **Central Repo (Automation Zone):** Owned by the platform team. It contains the logic to Fetch from the BU repo, Build the Apigee ZIP bundle, Scan it (Lint/Policy checks), Publish it to Nexus, and Deploy it via Apigee APIs.
+Because we use **Implementation Versioning** and store every validated bundle in Nexus, rolling back is a metadata change rather than a code change.
 
-**The Requirement:**
-I need a comprehensive technical strategy for **API Versioning and Promotion** within this specific framework.
+1.  **The Failure:** Deployment of `v1.0.5` to Production causes an outage.
+2.  **The Rollback:** The Central Pipeline allows a "Re-deploy" parameter. An operator selects the previous version (`v1.0.4`) from a dropdown list.
+3.  **The Execution:** The pipeline fetches the `v1.0.4.zip` directly from Nexus and calls the Apigee API to **Deploy and Undeploy** the faulty version.
+4.  **Audit:** Since the binary was already scanned and validated in the previous release cycle, no new testing is required for the rollback, significantly reducing **Mean Time to Recovery (MTTR)**.
 
-**User Inputs in `proxy.yml` include:**
-* `api_name`, `description`, `base_path`, `target_url`, `OAS_link`.
-* `version` (The user currently provides this, but I need guidance on its use).
-* `nexus_url/group` (I need to know if this should be a user input or automated).
+---
 
-**Questions to Answer:**
-1. **Versioning Strategy:** Define the difference between "Consumer Versioning" (Basepath) and "Implementation Versioning" (Nexus Artifact). How should each be managed in the pipeline?
-2. **Promotion Flow:** Explain the "Build Once, Deploy Many" process. How do we promote a validated ZIP from Nexus from a Dev environment to UAT and Production using the Two-Repo GitLab strategy?
-3. **Input Optimization:** Review the user inputs. Which fields should be removed from the user’s `proxy.yml` and handled by the Central Pipeline logic to ensure better governance?
-4. **Rollback Logic:** How does this versioning strategy enable a one-click rollback if a deployment fails in Production?
-
-**Output Format:**
-Please provide a structured technical recommendation with a **Table** for the promotion lifecycle and a **Sample YAML Schema** for the optimized `proxy.yml` file.
+**Next Steps:**
+Would you like me to draft the **Central GitLab CI/CD logic** that handles the automated fetching of the ZIP from Nexus based on these environment tags?
