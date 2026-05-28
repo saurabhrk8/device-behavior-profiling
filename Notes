@@ -1,11 +1,3 @@
-Work Item,Description / Detail
-OAS Resource Management,Logic to programmatically place the OpenAPI YAML into apiproxy/resources/oas/ and link it in the proxy manifest.
-API Spec Schema (api.yml),"Define a strict JSON/YAML schema for the team input file, covering name, basepath, target, and security tier."
-Policy Templating Engine,"Create standardized XML sets for ""Low, Medium, High"" tiers (e.g., SpikeArrest vs. Quota vs. JSONThreatProtection)."
-Intermediate Tier Policy Suite,"Develop specific XMLs for Barclays' Intermediate Tier, including JWKS URI validation and KVM-based secret lookups."
-WSDL-to-OAS Converter,Integration of a utility to automatically transform legacy SOAP WSDLs into OpenAPI 3.0 specs for the onboarding package.
-BAP Target Selection Logic,"Logic within the build script to prioritize ""bap"" hostnames from the Akana export for backend routing."
-Standardized Fault Handling,Design universal FaultRules templates to ensure consistent error response formats across all bank APIs.
-Shared Flow Integration,"Identify global logic (logging, header stripping) to be called via SharedFlowBundle across all generated proxies."
-Validation Hook,A pre-build script to detect basepath collisions or missing metadata before the proxy bundle is generated.
-XSD Compliance Engine,Ensures generated XMLs (like XMLToJSON) follow Apigee's strict schema to prevent deployment-time failures.
+Business Issue
+Capgemini Solution
+Benefits
