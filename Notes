@@ -1,15 +1,11 @@
-AWS Cloud Transformation Case Study
-Intelligent Automation in Fraud Operations
-Scaling compliance and streamlining low-value dispute processing through Amazon Web Services Intelligent Document Processing (IDP) and Generative AI.
+Subject: AWS Case Studies - Fraud Operations & Detection
 
-Training Blocker: Fraud analysts manually read massive compliance documents just to tick an acceptance checkbox, draining active dispute resolution hours.
-Sub-£25 Botttleneck: Manual receipt audits are mandatory before "auto-approving" low-value disputes (<£25), delaying resolution times.
+Hi Sagar,
 
-GenAI Training (Bedrock): Ingests policy PDFs to generate concise 1-page summaries and micro-quizzes, ensuring actual audit-ready comprehension.
-AI receipt Parsing (Textract): Auto-extracts merchant, amount, and date from receipt uploads without pre-defined templates.
-Auto-Workflow (Step Functions): Cross-checks metadata to instantly approve clear claims or route anomalies to human teams.
+As requested during our call yesterday, please find attached the AWS case study focused on Fraud Operations. We have proposed this solution to the Fraud CTO to significantly reduce manual processing times for the operations team by automating low-value dispute validations and streamlining compliance training.
 
+Could you please let me know if we are cleared to publish this case study on external platforms like LinkedIn?
 
-Straight-Through Processing: Converts low-value disputes into instant, second-long automated completions.
-Active Auditing: Replaces simple checkboxes with comprehension tracking (saved on AWS DynamoDB).
-Optimized Human Focus: Shifts highly trained analysts from checking receipts to hunting complex fraud rings.
+Additionally, I am working on a second AWS case study centered on fraud detection, sitting at the intersection of AWS Machine Learning (SageMaker) and AWS Data Platforms. I aim to share that with you as soon as possible.
+
+Best regards,
