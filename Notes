@@ -1,3 +1,29 @@
-Business Issue
-Capgemini Solution
-Benefits
+This precise breakdown fits the Capgemini case study format, structured using professional consulting terminology while incorporating the exact AWS services needed to solve your team's constraints.
+
+---
+
+### Business Issue
+
+* **Inefficient Compliance & Training Processes:** Fraud operations analysts must manually read dense, lengthy training and compliance documents. The current verification method relies on a passive "checkbox" at the bottom of the document, which fails to evaluate actual comprehension or create a robust, interactive audit trail for regulatory compliance.
+* **Friction in Low-Value Dispute Automation:** The bank's policy mandates automatic approval for customer disputes under £25 to reduce backlogs. However, the workflow is bottlenecked by a mandatory manual step: analysts must visually review merchant receipts to verify details before granting approval. This manual intervention completely disrupts the "Straight-Through Processing" (STP) pipeline, extending dispute resolution times and keeping analysts tied to repetitive, low-value verification tasks instead of complex fraud investigations.
+
+---
+
+### Capgemini Solution
+
+Capgemini proposes an Intelligent Document Processing (IDP) and Generative AI framework built natively on **Amazon Web Services (AWS)** to automate both workflows:
+
+* **Generative AI Training & Compliance Module:** Utilizing **Amazon Bedrock** (leveraging foundation models like Anthropic Claude) to ingest long-form compliance PDFs stored securely in **Amazon S3**. The solution automatically generates interactive, concise 1-page summaries and micro-quizzes. Completion data, quiz responses, and digital acceptance timestamps are captured dynamically in **Amazon DynamoDB** to build an immutable, audit-ready compliance trail.
+* **Automated Sub-£25 Receipt Validation Pipeline:** A fully serverless, automated intake pipeline using **Amazon API Gateway** and **AWS Lambda** to process uploaded merchant receipts. The solution leverages **Amazon Textract** (specifically the *AnalyzeExpense* API) to instantly extract critical data points—such as Merchant Name, Total Amount, and Transaction Date—without needing pre-built templates.
+* **Orchestration & Risk Guardrails:** **AWS Step Functions** serves as the core rules engine, cross-referencing extracted receipt data against core banking ledger details. If the data matches, it triggers instant auto-approval. To maintain security, **Amazon Fraud Detector** acts as a risk guardrail, automatically routing blurry documents or mismatched receipts to human analysts for manual review.
+
+---
+
+### Benefits
+
+* **Accelerated Time-to-Resolution:** Transitions the sub-£25 dispute workflow from manual processing to true Straight-Through Processing (STP), reducing turnaround time from days to near real-time (seconds) for compliant claims.
+* **Optimized Operational Capacity:** Eliminates low-value, repetitive document and receipt checking, allowing Barclays' specialized fraud operations team to redirect their focus toward high-value investigations and complex fraud rings.
+* **Enhanced Compliance Auditability:** Replaces passive checkboxes with a measurable, interactive verification process. This gives compliance officers a verifiable data log (quiz performance and timestamps) to easily satisfy Financial Conduct Authority (FCA) and internal audit standards.
+* **Cost Efficiency & Scalability:** Built entirely on an AWS serverless infrastructure, ensuring that operational costs scale efficiently alongside transaction volumes, eliminating heavy up-front server maintenance costs.
+
+---
